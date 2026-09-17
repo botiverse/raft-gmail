@@ -13,6 +13,7 @@ const config: Config = {
   DATABASE_URL: "postgres://unused",
   SESSION_SECRET: "test-session-secret-at-least-thirty-two-characters",
   TOKEN_ENCRYPTION_KEY_BASE64: Buffer.alloc(32, 7).toString("base64"),
+  AGENT_SESSION_TTL_SECONDS: 900,
   RAFT_APP_ORIGIN: "https://app.raft.build",
   RAFT_API_ORIGIN: "https://api.raft.build",
   RAFT_SETUP_PATH: "/login-with-raft/setup",

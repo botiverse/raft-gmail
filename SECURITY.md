@@ -19,6 +19,8 @@ The 32-byte token-encryption key encrypts Google refresh tokens with AES-256-GCM
 
 Human owner mutations require both the signed same-site session cookie and its `X-CSRF-Token` challenge. Agent actions use an independent bearer session and do not accept the human cookie as authorization.
 
+Service-local Agent sessions default to 15 minutes and cannot be configured beyond one hour. Account-grant revocation is checked live on every action. Raft app-install revocation is not yet pushed into this service, so a previously issued local Agent session remains structurally valid until its short expiry; deployments that need immediate app-level revocation should add a Raft revoke hook or live introspection before widening the session lifetime.
+
 ## No-send guarantee
 
 Google's `gmail.compose` scope permits both draft management and sending. The service's no-send guarantee comes from the smaller public manifest and implementation, not from the Google scope. CI scans production source for Gmail send calls and send routes, but review is still required when dependencies or action wiring change.

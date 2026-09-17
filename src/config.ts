@@ -13,6 +13,7 @@ const configSchema = z.object({
     }
     return value;
   }),
+  AGENT_SESSION_TTL_SECONDS: z.coerce.number().int().min(60).max(3600).default(900),
   RAFT_APP_ORIGIN: z.url().transform((value) => value.replace(/\/+$/, "")),
   RAFT_API_ORIGIN: z.url().transform((value) => value.replace(/\/+$/, "")),
   RAFT_SETUP_PATH: z.string().startsWith("/"),
@@ -31,6 +32,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Config
     DATABASE_URL: environment.DATABASE_URL,
     SESSION_SECRET: environment.SESSION_SECRET,
     TOKEN_ENCRYPTION_KEY_BASE64: environment.TOKEN_ENCRYPTION_KEY_BASE64,
+    AGENT_SESSION_TTL_SECONDS: environment.AGENT_SESSION_TTL_SECONDS ?? "900",
     RAFT_APP_ORIGIN: environment.RAFT_APP_ORIGIN ?? "https://app.raft.build",
     RAFT_API_ORIGIN: environment.RAFT_API_ORIGIN ?? "https://api.raft.build",
     RAFT_SETUP_PATH: environment.RAFT_SETUP_PATH ?? "/login-with-raft/setup",

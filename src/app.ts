@@ -104,7 +104,7 @@ export function createApp(dependencies: AppDependencies) {
       return sendError(res, 403, "AGENT_REQUIRED", "This callback requires a Raft Agent identity.");
     }
     const token = randomToken();
-    const expiresAt = new Date(now().getTime() + 12 * 60 * 60 * 1000).toISOString();
+    const expiresAt = new Date(now().getTime() + config.AGENT_SESSION_TTL_SECONDS * 1000).toISOString();
     await repository.putAgentSession({
       tokenHash: hashOpaqueToken(token),
       agentId: principal.id,
