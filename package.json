@@ -1,0 +1,39 @@
+{
+  "name": "@botiverse/raft-gmail",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Self-hosted Gmail capability service for Raft humans and their authorized agents.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "npm run typecheck && npm test && npm run capability:check && npm run manifest:check",
+    "capability:check": "tsx scripts/check-capability-boundary.ts",
+    "dev": "tsx watch src/main.ts",
+    "manifest:check": "tsx scripts/check-manifest.ts",
+    "migrate": "tsx scripts/migrate.ts",
+    "start": "node dist/src/main.js",
+    "test": "node --import tsx --test test/**/*.test.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "cookie-session": "2.1.1",
+    "express": "5.2.1",
+    "googleapis": "181.0.0",
+    "pg": "8.23.0",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@types/cookie-session": "2.0.49",
+    "@types/express": "5.0.6",
+    "@types/node": "26.6.1",
+    "@types/pg": "8.23.1",
+    "@types/supertest": "7.2.1",
+    "supertest": "7.2.2",
+    "tsx": "4.23.13",
+    "typescript": "7.0.2"
+  }
+}
