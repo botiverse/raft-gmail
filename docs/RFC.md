@@ -43,6 +43,12 @@ Every draft write requires a stable caller-generated operation ID.
 
 The pending marker prevents duplicate drafts in the dangerous direction. A future release should add an owner-visible reconciliation UI rather than silently clearing pending writes.
 
+## Scheduling boundary
+
+The default orchestration layer is the Agent: a Raft reminder wakes the Agent, the Agent calls this service, and the synchronous result returns to that Agent. This keeps timing and presentation in the component that has the live conversation context while the service remains a narrow Gmail capability boundary.
+
+A future app-native scheduler is justified only for monitors that must run while the Agent is offline. It should be a distinct durable primitive with an owner, Gmail account, exact Agent principal, query, schedule, and app-owned result inbox. Each run must revalidate the live Agent grant. It must not persist or guess a Raft channel; the Agent retrieves the result and chooses the current destination. A future reliable Raft Agent-event delivery mechanism could replace polling without changing this stored contract.
+
 ## Data model
 
 - `gmail_accounts`: owner Raft user, Raft Server, Gmail address, encrypted refresh token.
@@ -56,7 +62,7 @@ Deleting an account cascades its grants and draft-operation metadata. Audit rows
 ## Out of scope for v0.1
 
 - hosted multi-tenant operation;
-- scheduled monitoring or channel delivery;
+- app-native scheduled monitoring, result inboxes, or channel delivery;
 - mail sending;
 - mailbox state changes other than drafts;
 - HTML-composer UI;
