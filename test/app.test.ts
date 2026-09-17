@@ -153,6 +153,40 @@ describe("Raft Gmail capability boundary", () => {
     assert.equal(hidden.body.error.code, "ACCOUNT_NOT_FOUND");
   });
 
+  it("keeps grants account-scoped for the same Agent on the same Server", async () => {
+    const { app, repository, gmail } = fixture();
+    const vault = createTokenVault(config.TOKEN_ENCRYPTION_KEY_BASE64);
+    const first = await repository.upsertGmailAccount({
+      ownerId: "human-1",
+      serverId: "server-1",
+      email: "first@example.com",
+      encryptedRefreshToken: vault.encrypt("first-secret")
+    });
+    const second = await repository.upsertGmailAccount({
+      ownerId: "human-1",
+      serverId: "server-1",
+      email: "second@example.com",
+      encryptedRefreshToken: vault.encrypt("second-secret")
+    });
+    await repository.putGrant(
+      { accountId: first.id, agentId: "agent-a", serverId: "server-1", scopes: ["gmail.read"], enabled: true },
+      "human-1"
+    );
+    const token = await loginAgent(app, "agentA");
+
+    await request(app)
+      .post("/actions/gmail-search")
+      .set("authorization", `Bearer ${token}`)
+      .send({ accountId: first.id, query: "is:inbox" })
+      .expect(200);
+    await request(app)
+      .post("/actions/gmail-search")
+      .set("authorization", `Bearer ${token}`)
+      .send({ accountId: second.id, query: "is:inbox" })
+      .expect(403);
+    assert.equal(gmail.searchCalls, 1);
+  });
+
   it("enforces read and draft scopes independently and revokes access immediately", async () => {
     const { app, gmail } = fixture();
     const human = request.agent(app);
@@ -214,6 +248,19 @@ describe("Raft Gmail capability boundary", () => {
       .expect(200);
     assert.equal(replayed.body.result.replayed, true);
     assert.equal(gmail.createCalls, 1);
+
+    const updated = await request(app)
+      .post("/actions/gmail-draft-update")
+      .set("authorization", `Bearer ${token}`)
+      .send({
+        ...payload,
+        operationId: "operation-direct-update",
+        draftId: created.body.result.id,
+        bodyText: "Updated draft body."
+      })
+      .expect(200);
+    assert.equal(updated.body.result.id, created.body.result.id);
+    assert.equal(gmail.updateCalls, 1);
   });
 
   it("holds an ambiguous draft outcome instead of retrying or duplicating", async () => {

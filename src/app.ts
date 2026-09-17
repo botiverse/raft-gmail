@@ -312,7 +312,8 @@ export function createApp(dependencies: AppDependencies) {
       "RAFT_USERINFO_FAILED",
       "RAFT_USERINFO_INVALID_PRINCIPAL",
       "GOOGLE_REFRESH_TOKEN_MISSING",
-      "GOOGLE_EMAIL_MISSING"
+      "GOOGLE_EMAIL_MISSING",
+      "GOOGLE_EMAIL_NOT_VERIFIED"
     ]);
     return sendError(res, 500, safeCodes.has(code) ? code : "INTERNAL_ERROR", "The request could not be completed.");
   });

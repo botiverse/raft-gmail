@@ -75,6 +75,7 @@ export function createGoogleIdentityProvider(config: Config): GoogleIdentityProv
       const oauth2 = google.oauth2({ version: "v2", auth: client });
       const profile = await oauth2.userinfo.get();
       if (!profile.data.email) throw new Error("GOOGLE_EMAIL_MISSING");
+      if (profile.data.verified_email !== true) throw new Error("GOOGLE_EMAIL_NOT_VERIFIED");
       return { email: profile.data.email, refreshToken: tokens.refresh_token };
     }
   };
