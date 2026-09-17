@@ -64,6 +64,8 @@ Human browser sessions can use:
 - `PUT /api/accounts/:accountId/grants/:agentId`
 - `DELETE /api/accounts/:accountId/grants/:agentId`
 
+`GET /api/session` returns the signed session's CSRF token. Send it as `X-CSRF-Token` on every owner mutation (`PUT` or `DELETE`).
+
 Example grant body:
 
 ```json

@@ -93,7 +93,7 @@ export function createApp(dependencies: AppDependencies) {
       req.session = null;
       return sendError(res, 403, "HUMAN_REQUIRED", "This callback requires a Raft human identity.");
     }
-    req.session = { principal };
+    req.session = { principal, csrfToken: randomToken() };
     res.redirect("/");
   }));
 
@@ -156,14 +156,14 @@ export function createApp(dependencies: AppDependencies) {
       action: "gmail.account.connect",
       outcome: "succeeded"
     });
-    req.session = { principal };
+    req.session = { principal, csrfToken: req.session?.csrfToken ?? randomToken() };
     res.json({ ok: true, result: publicAccount(account) });
   }));
 
   app.get("/api/session", (req, res) => {
     const principal = req.session?.principal as RaftPrincipal | undefined;
     if (!principal) return sendError(res, 401, "SESSION_REQUIRED", "Login with Raft is required.");
-    res.json({ ok: true, principal });
+    res.json({ ok: true, principal, csrfToken: req.session?.csrfToken });
   });
 
   app.get("/api/accounts", requireHuman, asyncRoute(async (req, res) => {
@@ -172,7 +172,7 @@ export function createApp(dependencies: AppDependencies) {
     res.json({ ok: true, result: accounts.map(publicAccount) });
   }));
 
-  app.delete("/api/accounts/:accountId", requireHuman, asyncRoute(async (req, res) => {
+  app.delete("/api/accounts/:accountId", requireHuman, requireCsrf, asyncRoute(async (req, res) => {
     const { accountId } = accountSchema.parse(req.params);
     const principal = humanPrincipal(req);
     const deleted = await repository.deleteGmailAccount(accountId, principal.id, principal.serverId);
@@ -194,7 +194,7 @@ export function createApp(dependencies: AppDependencies) {
     res.json({ ok: true, result: grants });
   }));
 
-  app.put("/api/accounts/:accountId/grants/:agentId", requireHuman, asyncRoute(async (req, res) => {
+  app.put("/api/accounts/:accountId/grants/:agentId", requireHuman, requireCsrf, asyncRoute(async (req, res) => {
     const { accountId } = accountSchema.parse(req.params);
     const agentId = z.string().min(1).max(256).parse(req.params.agentId);
     const body = grantSchema.parse(req.body);
@@ -220,7 +220,7 @@ export function createApp(dependencies: AppDependencies) {
     res.json({ ok: true, result: grant });
   }));
 
-  app.delete("/api/accounts/:accountId/grants/:agentId", requireHuman, asyncRoute(async (req, res) => {
+  app.delete("/api/accounts/:accountId/grants/:agentId", requireHuman, requireCsrf, asyncRoute(async (req, res) => {
     const { accountId } = accountSchema.parse(req.params);
     const agentId = z.string().min(1).max(256).parse(req.params.agentId);
     const principal = humanPrincipal(req);
@@ -324,6 +324,13 @@ function requireHuman(req: Request, res: Response, next: NextFunction) {
   const principal = req.session?.principal as RaftPrincipal | undefined;
   if (principal?.type === "human") return next();
   return sendError(res, 401, "HUMAN_SESSION_REQUIRED", "A Raft human session is required.");
+}
+
+function requireCsrf(req: Request, res: Response, next: NextFunction) {
+  const expected = req.session?.csrfToken;
+  const supplied = req.header("x-csrf-token");
+  if (typeof expected === "string" && expected.length >= 16 && supplied === expected) return next();
+  return sendError(res, 403, "CSRF_TOKEN_INVALID", "A valid session CSRF token is required.");
 }
 
 function requireAgentSession(repository: Repository) {

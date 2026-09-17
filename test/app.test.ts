@@ -83,13 +83,24 @@ async function connectGmail(agent: TestAgent) {
   return result.body.result.id as string;
 }
 
+async function csrfToken(agent: TestAgent) {
+  const session = await agent.get("/api/session").expect(200);
+  assert.equal(typeof session.body.csrfToken, "string");
+  return session.body.csrfToken as string;
+}
+
 async function loginAgent(app: ReturnType<typeof createApp>, code: string) {
   const result = await request(app).get(`/auth/raft/agent/callback?code=${code}`).expect(200);
   return result.body.agentSessionToken as string;
 }
 
 async function putGrant(agent: TestAgent, accountId: string, agentId: string, scopes: string[]) {
-  await agent.put(`/api/accounts/${accountId}/grants/${agentId}`).send({ scopes, enabled: true }).expect(200);
+  const csrf = await csrfToken(agent);
+  await agent
+    .put(`/api/accounts/${accountId}/grants/${agentId}`)
+    .set("x-csrf-token", csrf)
+    .send({ scopes, enabled: true })
+    .expect(200);
 }
 
 describe("Raft Gmail capability boundary", () => {
@@ -102,6 +113,20 @@ describe("Raft Gmail capability boundary", () => {
     assert.equal(listed.body.result[0].id, accountId);
     assert.equal(listed.text.includes("google-refresh-token-secret"), false);
     assert.equal(listed.text.includes("encryptedRefreshToken"), false);
+  });
+
+  it("requires a session CSRF challenge for human grant mutations", async () => {
+    const { app } = fixture();
+    const human = request.agent(app);
+    await loginHuman(human);
+    const accountId = await connectGmail(human);
+    const denied = await human
+      .put(`/api/accounts/${accountId}/grants/agent-a`)
+      .send({ scopes: ["gmail.read"], enabled: true })
+      .expect(403);
+    assert.equal(denied.body.error.code, "CSRF_TOKEN_INVALID");
+
+    await putGrant(human, accountId, "agent-a", ["gmail.read"]);
   });
 
   it("denies an ungranted Agent and does not reveal whether another server owns the account", async () => {
@@ -150,7 +175,8 @@ describe("Raft Gmail capability boundary", () => {
       .expect(403);
     assert.equal(gmail.createCalls, 0);
 
-    await human.delete(`/api/accounts/${accountId}/grants/agent-a`).expect(200);
+    const csrf = await csrfToken(human);
+    await human.delete(`/api/accounts/${accountId}/grants/agent-a`).set("x-csrf-token", csrf).expect(200);
     await request(app)
       .post("/actions/gmail-search")
       .set("authorization", `Bearer ${token}`)

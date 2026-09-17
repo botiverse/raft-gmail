@@ -17,6 +17,8 @@ This is self-hosted software. The operator is responsible for:
 
 The 32-byte token-encryption key encrypts Google refresh tokens with AES-256-GCM. Losing it makes stored Gmail connections unusable; disclosing it exposes every stored refresh token to anyone who can also read the database. This initial version does not yet implement online key rotation.
 
+Human owner mutations require both the signed same-site session cookie and its `X-CSRF-Token` challenge. Agent actions use an independent bearer session and do not accept the human cookie as authorization.
+
 ## No-send guarantee
 
 Google's `gmail.compose` scope permits both draft management and sending. The service's no-send guarantee comes from the smaller public manifest and implementation, not from the Google scope. CI scans production source for Gmail send calls and send routes, but review is still required when dependencies or action wiring change.
