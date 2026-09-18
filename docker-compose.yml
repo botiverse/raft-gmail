@@ -1,0 +1,19 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: raft_gmail
+      POSTGRES_USER: raft_gmail
+      POSTGRES_PASSWORD: raft_gmail
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - raft-gmail-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U raft_gmail -d raft_gmail"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  raft-gmail-postgres:
