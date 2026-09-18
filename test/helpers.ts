@@ -59,6 +59,31 @@ export class MemoryRepository implements Repository {
     return result;
   }
 
+  async updateGrant(input: {
+    accountId: string;
+    agentId: string;
+    ownerId: string;
+    serverId: string;
+    scopes: AgentGrant["scopes"];
+    enabled: boolean;
+  }) {
+    const account = this.accounts.get(input.accountId);
+    const key = `${input.accountId}:${input.agentId}`;
+    const existing = this.grants.get(key);
+    if (!account || account.ownerId !== input.ownerId || account.serverId !== input.serverId ||
+        !existing || existing.serverId !== input.serverId) {
+      return null;
+    }
+    const updated: AgentGrant = {
+      ...existing,
+      scopes: input.scopes,
+      enabled: input.enabled,
+      updatedAt: this.now().toISOString()
+    };
+    this.grants.set(key, updated);
+    return updated;
+  }
+
   async deleteGrant(accountId: string, agentId: string, ownerId: string, serverId: string) {
     const account = this.accounts.get(accountId);
     if (!account || account.ownerId !== ownerId || account.serverId !== serverId) return false;

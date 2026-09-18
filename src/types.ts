@@ -81,6 +81,14 @@ export interface Repository {
   getGmailAccount(accountId: string): Promise<GmailAccount | null>;
   deleteGmailAccount(accountId: string, ownerId: string, serverId: string): Promise<boolean>;
   putGrant(grant: Omit<AgentGrant, "updatedAt">, ownerId: string): Promise<AgentGrant>;
+  updateGrant(input: {
+    accountId: string;
+    agentId: string;
+    ownerId: string;
+    serverId: string;
+    scopes: GrantScope[];
+    enabled: boolean;
+  }): Promise<AgentGrant | null>;
   deleteGrant(accountId: string, agentId: string, ownerId: string, serverId: string): Promise<boolean>;
   getGrant(accountId: string, agentId: string, serverId: string): Promise<AgentGrant | null>;
   listGrants(accountId: string, ownerId: string, serverId: string): Promise<AgentGrant[]>;
