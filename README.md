@@ -2,8 +2,9 @@
 
 Raft Gmail is a self-hosted capability service that lets a Raft human connect Gmail accounts and grant specific Raft Agents access to specific accounts.
 
-Version 0.1 intentionally exposes only four Agent actions:
+Version 0.1 intentionally exposes only five Agent actions:
 
+- request human approval for Gmail access;
 - search mail;
 - read a message;
 - create a Gmail draft;
@@ -43,16 +44,26 @@ npm run migrate
 npm run dev
 ```
 
-Register these Raft callback URLs for the local origin:
+`npm run dev` starts the owner dashboard at <http://localhost:5173> and proxies its API and OAuth routes to the service on port 4184. Register these Raft callback URLs for that local origin:
 
-- `http://localhost:4184/auth/raft/callback`
-- `http://localhost:4184/auth/raft/agent/callback`
+- `http://localhost:5173/auth/raft/callback`
+- `http://localhost:5173/auth/raft/agent/callback`
 
 Register this Google callback URL:
 
-- `http://localhost:4184/auth/google/callback`
+- `http://localhost:5173/auth/google/callback`
 
-Open <http://localhost:4184>, sign in as a Raft human, and connect Gmail. The owner APIs can then grant an Agent `gmail.read`, `gmail.draft`, or both. The public Agent manifest is available at `/.well-known/raft-app-manifest.json` and `/.well-known/raft-agent-manifest.json`.
+Open <http://localhost:5173> and use the owner dashboard to:
+
+1. sign in with Raft as a human;
+2. connect one or more Gmail accounts;
+3. choose **Add Agent**, copy the generated prompt into a conversation with the Agent, and let the Agent submit a request with its authenticated Raft identity;
+4. open **Access requests**, choose one or more Gmail accounts, and approve read, draft, or both permissions (or deny the request);
+5. pause, edit, or revoke any account-specific grant at any time.
+
+The dashboard deliberately has no send action. The public Agent manifest is available at `/.well-known/raft-app-manifest.json` and `/.well-known/raft-agent-manifest.json` through either the Vite proxy or the service.
+
+For a production-style local run, use `npm run build && npm start`; the service then serves the compiled dashboard and API together at <http://localhost:4184>. Set `APP_ORIGIN` and all registered OAuth callbacks to that deployed origin.
 
 ## Owner API
 
@@ -61,12 +72,16 @@ Human browser sessions can use:
 - `GET /api/accounts`
 - `DELETE /api/accounts/:accountId`
 - `GET /api/accounts/:accountId/grants`
+- `GET /api/access-request-instructions`
+- `GET /api/access-requests`
+- `POST /api/access-requests/:requestId/approve`
+- `POST /api/access-requests/:requestId/deny`
 - `PUT /api/accounts/:accountId/grants/:agentId`
 - `DELETE /api/accounts/:accountId/grants/:agentId`
 
 `GET /api/session` returns the signed session's CSRF token. Send it as `X-CSRF-Token` on every owner mutation (`PUT` or `DELETE`).
 
-Example grant body:
+The `PUT` route edits an existing approved grant; it cannot create a grant for an arbitrary Agent ID. Example edit body:
 
 ```json
 {
@@ -78,6 +93,8 @@ Example grant body:
 ## Agent actions
 
 An Agent completes Login with Raft through `/auth/raft/agent/callback`, then uses the returned service-local bearer token. Action responses are structured JSON returned directly to the caller.
+
+`gmail-access-request` accepts the signed `ownerRef` copied from the owner's prompt, the requested scopes, and a reason. The service takes the Agent ID and display name from the authenticated Agent session. The request creates no grant until the human approves it for selected accounts.
 
 Draft writes require a caller-generated `operationId`. The service records `pending` before contacting Gmail. A repeated successful operation is replay-safe; an ambiguous provider outcome is held for reconciliation and is never blindly retried.
 

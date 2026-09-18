@@ -1,0 +1,25 @@
+@import "tailwindcss";
+@import "raft-ui/styles.css";
+@source "../../node_modules/raft-ui/dist/**/*.{js,mjs}";
+
+:root {
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  color: var(--color-foreground);
+  background: var(--color-layer-canvas-muted);
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+  margin: 0;
+}
+
+body {
+  min-width: 320px;
+}
+
+button,
+input {
+  font: inherit;
+}

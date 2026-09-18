@@ -24,7 +24,8 @@ const config: Config = {
 };
 
 function fixture() {
-  const repository = new MemoryRepository();
+  const now = () => new Date("2026-09-18T00:00:00.000Z");
+  const repository = new MemoryRepository(now);
   const gmail = new FakeGmail();
   let tokenCounter = 0;
   const principals: Record<string, RaftPrincipal> = {
@@ -60,7 +61,7 @@ function fixture() {
       }
     },
     randomToken: () => `test-token-${++tokenCounter}-abcdefghijklmnopqrstuvwxyz`,
-    now: () => new Date("2026-09-18T00:00:00.000Z")
+    now
   });
   return { app, repository, gmail };
 }
@@ -80,14 +81,18 @@ async function connectGmail(agent: TestAgent) {
   assert.ok(start.headers.location);
   const state = new URL(start.headers.location as string).searchParams.get("state");
   assert.ok(state);
-  const result = await agent.get(`/auth/google/callback?code=google&state=${encodeURIComponent(state)}`).expect(200);
-  return result.body.result.id as string;
+  await agent
+    .get(`/auth/google/callback?code=google&state=${encodeURIComponent(state)}`)
+    .expect(302)
+    .expect("location", "/?connected=1");
+  const result = await agent.get("/api/accounts").expect(200);
+  return result.body.result[0].id as string;
 }
 
 async function csrfToken(agent: TestAgent) {
   const session = await agent.get("/api/session").expect(200);
-  assert.equal(typeof session.body.csrfToken, "string");
-  return session.body.csrfToken as string;
+  assert.equal(typeof session.body.result.csrfToken, "string");
+  return session.body.result.csrfToken as string;
 }
 
 async function loginAgent(app: ReturnType<typeof createApp>, code: string) {
@@ -95,18 +100,20 @@ async function loginAgent(app: ReturnType<typeof createApp>, code: string) {
   return result.body.agentSessionToken as string;
 }
 
-async function putGrant(agent: TestAgent, accountId: string, agentId: string, scopes: string[]) {
-  const csrf = await csrfToken(agent);
-  await agent
-    .put(`/api/accounts/${accountId}/grants/${agentId}`)
-    .set("x-csrf-token", csrf)
-    .send({ scopes, enabled: true })
-    .expect(200);
+async function putGrant(repository: MemoryRepository, accountId: string, agentId: string, scopes: Array<"gmail.read" | "gmail.draft">) {
+  await repository.putGrant({
+    accountId,
+    agentId,
+    agentName: agentId === "agent-a" ? "Agent A" : agentId,
+    serverId: "server-1",
+    scopes,
+    enabled: true
+  }, "human-1");
 }
 
 describe("Raft Gmail capability boundary", () => {
   it("connects a human-owned Gmail account without exposing its refresh token", async () => {
-    const { app } = fixture();
+    const { app, repository } = fixture();
     const human = request.agent(app);
     await loginHuman(human);
     const accountId = await connectGmail(human);
@@ -117,7 +124,7 @@ describe("Raft Gmail capability boundary", () => {
   });
 
   it("requires a session CSRF challenge for human grant mutations", async () => {
-    const { app } = fixture();
+    const { app, repository } = fixture();
     const human = request.agent(app);
     await loginHuman(human);
     const accountId = await connectGmail(human);
@@ -127,7 +134,59 @@ describe("Raft Gmail capability boundary", () => {
       .expect(403);
     assert.equal(denied.body.error.code, "CSRF_TOKEN_INVALID");
 
-    await putGrant(human, accountId, "agent-a", ["gmail.read"]);
+    await putGrant(repository, accountId, "agent-a", ["gmail.read"]);
+    const csrf = await csrfToken(human);
+    await human
+      .put(`/api/accounts/${accountId}/grants/agent-a`)
+      .set("x-csrf-token", csrf)
+      .send({ scopes: ["gmail.read"], enabled: true })
+      .expect(200);
+  });
+
+  it("requires an authenticated Agent request before a human can create account grants", async () => {
+    const { app } = fixture();
+    const human = request.agent(app);
+    await loginHuman(human);
+    const accountId = await connectGmail(human);
+    const csrf = await csrfToken(human);
+
+    const blocked = await human
+      .put(`/api/accounts/${accountId}/grants/agent-a`)
+      .set("x-csrf-token", csrf)
+      .send({ scopes: ["gmail.read"], enabled: true })
+      .expect(409);
+    assert.equal(blocked.body.error.code, "ACCESS_REQUEST_REQUIRED");
+
+    const instructions = await human.get("/api/access-request-instructions").expect(200);
+    const token = await loginAgent(app, "agentA");
+    const requested = await request(app)
+      .post("/actions/gmail-access-request")
+      .set("authorization", `Bearer ${token}`)
+      .send({
+        ownerRef: instructions.body.result.ownerRef,
+        scopes: ["gmail.read", "gmail.draft"],
+        reason: "Help triage mail and prepare reply drafts."
+      })
+      .expect(200);
+    assert.equal(requested.body.result.agentName, "Agent A");
+
+    const pending = await human.get("/api/access-requests").expect(200);
+    assert.equal(pending.body.result.length, 1);
+    assert.equal(pending.body.result[0].agentId, "agent-a");
+
+    const approved = await human
+      .post(`/api/access-requests/${requested.body.result.id}/approve`)
+      .set("x-csrf-token", csrf)
+      .send({ accountIds: [accountId], scopes: ["gmail.read"] })
+      .expect(200);
+    assert.equal(approved.body.result.grants[0].agentName, "Agent A");
+    assert.deepEqual(approved.body.result.grants[0].scopes, ["gmail.read"]);
+
+    await request(app)
+      .post("/actions/gmail-search")
+      .set("authorization", `Bearer ${token}`)
+      .send({ accountId, query: "is:unread" })
+      .expect(200);
   });
 
   it("denies an ungranted Agent and does not reveal whether another server owns the account", async () => {
@@ -170,7 +229,7 @@ describe("Raft Gmail capability boundary", () => {
       encryptedRefreshToken: vault.encrypt("second-secret")
     });
     await repository.putGrant(
-      { accountId: first.id, agentId: "agent-a", serverId: "server-1", scopes: ["gmail.read"], enabled: true },
+      { accountId: first.id, agentId: "agent-a", agentName: "Agent A", serverId: "server-1", scopes: ["gmail.read"], enabled: true },
       "human-1"
     );
     const token = await loginAgent(app, "agentA");
@@ -189,11 +248,11 @@ describe("Raft Gmail capability boundary", () => {
   });
 
   it("enforces read and draft scopes independently and revokes access immediately", async () => {
-    const { app, gmail } = fixture();
+    const { app, gmail, repository } = fixture();
     const human = request.agent(app);
     await loginHuman(human);
     const accountId = await connectGmail(human);
-    await putGrant(human, accountId, "agent-a", ["gmail.read"]);
+    await putGrant(repository, accountId, "agent-a", ["gmail.read"]);
     const token = await loginAgent(app, "agentA");
 
     await request(app)
@@ -220,11 +279,11 @@ describe("Raft Gmail capability boundary", () => {
   });
 
   it("lets a draft-granted Agent create directly and safely replays the same operation", async () => {
-    const { app, gmail } = fixture();
+    const { app, gmail, repository } = fixture();
     const human = request.agent(app);
     await loginHuman(human);
     const accountId = await connectGmail(human);
-    await putGrant(human, accountId, "agent-a", ["gmail.draft"]);
+    await putGrant(repository, accountId, "agent-a", ["gmail.draft"]);
     const token = await loginAgent(app, "agentA");
     const payload = {
       accountId,
@@ -265,11 +324,11 @@ describe("Raft Gmail capability boundary", () => {
   });
 
   it("holds an ambiguous draft outcome instead of retrying or duplicating", async () => {
-    const { app, gmail } = fixture();
+    const { app, gmail, repository } = fixture();
     const human = request.agent(app);
     await loginHuman(human);
     const accountId = await connectGmail(human);
-    await putGrant(human, accountId, "agent-a", ["gmail.draft"]);
+    await putGrant(repository, accountId, "agent-a", ["gmail.draft"]);
     const token = await loginAgent(app, "agentA");
     gmail.failNextCreate = true;
     const payload = {
@@ -298,7 +357,7 @@ describe("Raft Gmail capability boundary", () => {
     const { app } = fixture();
     const manifest = await request(app).get("/.well-known/raft-app-manifest.json").expect(200);
     const names = manifest.body.actions.map((action: { name: string }) => action.name);
-    assert.deepEqual(names, ["gmail-search", "gmail-read", "gmail-draft-create", "gmail-draft-update"]);
+    assert.deepEqual(names, ["gmail-access-request", "gmail-search", "gmail-read", "gmail-draft-create", "gmail-draft-update"]);
     assert.equal(names.some((name: string) => name.includes("send")), false);
     await request(app).post("/actions/gmail-send").send({}).expect(404);
   });

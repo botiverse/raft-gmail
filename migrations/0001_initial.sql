@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS gmail_accounts (
 CREATE TABLE IF NOT EXISTS account_agent_grants (
   gmail_account_id uuid NOT NULL REFERENCES gmail_accounts(id) ON DELETE CASCADE,
   raft_agent_id text NOT NULL,
+  agent_name text NOT NULL,
   raft_server_id text NOT NULL,
   scopes text[] NOT NULL,
   enabled boolean NOT NULL DEFAULT true,
@@ -22,6 +23,29 @@ CREATE TABLE IF NOT EXISTS account_agent_grants (
   CONSTRAINT account_agent_grants_scopes_check
     CHECK (scopes <@ ARRAY['gmail.read', 'gmail.draft']::text[])
 );
+
+CREATE TABLE IF NOT EXISTS agent_access_requests (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  owner_raft_user_id text NOT NULL,
+  raft_server_id text NOT NULL,
+  raft_agent_id text NOT NULL,
+  agent_name text NOT NULL,
+  requested_scopes text[] NOT NULL,
+  reason text NOT NULL,
+  status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'denied')),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  decided_at timestamptz,
+  CONSTRAINT agent_access_requests_scopes_check
+    CHECK (requested_scopes <@ ARRAY['gmail.read', 'gmail.draft']::text[])
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS agent_access_requests_one_pending_idx
+  ON agent_access_requests (owner_raft_user_id, raft_server_id, raft_agent_id)
+  WHERE status = 'pending';
+
+CREATE INDEX IF NOT EXISTS agent_access_requests_owner_idx
+  ON agent_access_requests (owner_raft_user_id, raft_server_id, status, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS agent_sessions (
   token_hash text PRIMARY KEY,

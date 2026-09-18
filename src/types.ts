@@ -22,10 +22,27 @@ export interface GmailAccount {
 export interface AgentGrant {
   accountId: string;
   agentId: string;
+  agentName: string;
   serverId: string;
   scopes: GrantScope[];
   enabled: boolean;
   updatedAt: string;
+}
+
+export type AccessRequestStatus = "pending" | "approved" | "denied";
+
+export interface AgentAccessRequest {
+  id: string;
+  ownerId: string;
+  serverId: string;
+  agentId: string;
+  agentName: string;
+  requestedScopes: GrantScope[];
+  reason: string;
+  status: AccessRequestStatus;
+  createdAt: string;
+  updatedAt: string;
+  decidedAt?: string;
 }
 
 export interface AgentSession {
@@ -67,6 +84,18 @@ export interface Repository {
   deleteGrant(accountId: string, agentId: string, ownerId: string, serverId: string): Promise<boolean>;
   getGrant(accountId: string, agentId: string, serverId: string): Promise<AgentGrant | null>;
   listGrants(accountId: string, ownerId: string, serverId: string): Promise<AgentGrant[]>;
+  createAccessRequest(
+    request: Omit<AgentAccessRequest, "id" | "status" | "createdAt" | "updatedAt" | "decidedAt">
+  ): Promise<AgentAccessRequest>;
+  listAccessRequests(ownerId: string, serverId: string): Promise<AgentAccessRequest[]>;
+  decideAccessRequest(input: {
+    requestId: string;
+    ownerId: string;
+    serverId: string;
+    decision: "approved" | "denied";
+    accountIds?: string[];
+    scopes?: GrantScope[];
+  }): Promise<{ request: AgentAccessRequest; grants: AgentGrant[] }>;
   putAgentSession(session: AgentSession): Promise<void>;
   getAgentSession(tokenHash: string): Promise<AgentSession | null>;
   deleteAgentSession(tokenHash: string): Promise<void>;

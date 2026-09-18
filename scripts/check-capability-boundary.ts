@@ -9,7 +9,7 @@ const forbidden = [
   /name:\s*["'`]gmail-send["'`]/
 ];
 
-for await (const file of glob("src/**/*.ts")) {
+for await (const file of glob("src/**/*.{ts,tsx}")) {
   const source = await readFile(file, "utf8");
   for (const pattern of forbidden) {
     assert.equal(pattern.test(source), false, `${file} contains forbidden send capability matching ${pattern}`);

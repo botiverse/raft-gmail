@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import type {
+  AgentAccessRequest,
   AgentGrant,
   AgentSession,
   AuditEvent,
@@ -12,9 +13,12 @@ import type {
 export class MemoryRepository implements Repository {
   accounts = new Map<string, GmailAccount>();
   grants = new Map<string, AgentGrant>();
+  accessRequests = new Map<string, AgentAccessRequest>();
   sessions = new Map<string, AgentSession>();
   audit: AuditEvent[] = [];
   operations = new Map<string, DraftOperation>();
+
+  constructor(private readonly now: () => Date = () => new Date()) {}
 
   async upsertGmailAccount(input: Omit<GmailAccount, "id" | "createdAt">) {
     const existing = [...this.accounts.values()].find(
@@ -72,13 +76,79 @@ export class MemoryRepository implements Repository {
     return [...this.grants.values()].filter((item) => item.accountId === accountId);
   }
 
+  async createAccessRequest(
+    request: Omit<AgentAccessRequest, "id" | "status" | "createdAt" | "updatedAt" | "decidedAt">
+  ) {
+    const existing = [...this.accessRequests.values()].find(
+      (item) => item.ownerId === request.ownerId && item.serverId === request.serverId &&
+        item.agentId === request.agentId && item.status === "pending"
+    );
+    const timestamp = this.now().toISOString();
+    const result: AgentAccessRequest = {
+      id: existing?.id ?? crypto.randomUUID(),
+      ...request,
+      status: "pending",
+      createdAt: existing?.createdAt ?? timestamp,
+      updatedAt: timestamp
+    };
+    this.accessRequests.set(result.id, result);
+    return result;
+  }
+
+  async listAccessRequests(ownerId: string, serverId: string) {
+    return [...this.accessRequests.values()].filter(
+      (item) => item.ownerId === ownerId && item.serverId === serverId
+    );
+  }
+
+  async decideAccessRequest(input: {
+    requestId: string;
+    ownerId: string;
+    serverId: string;
+    decision: "approved" | "denied";
+    accountIds?: string[];
+    scopes?: AgentGrant["scopes"];
+  }) {
+    const request = this.accessRequests.get(input.requestId);
+    if (!request || request.ownerId !== input.ownerId || request.serverId !== input.serverId) {
+      throw new Error("ACCESS_REQUEST_NOT_FOUND");
+    }
+    if (request.status !== "pending") throw new Error("ACCESS_REQUEST_ALREADY_DECIDED");
+    const grants: AgentGrant[] = [];
+    if (input.decision === "approved") {
+      const accountIds = [...new Set(input.accountIds ?? [])];
+      const scopes = [...new Set(input.scopes ?? [])];
+      if (!accountIds.length || !scopes.length || scopes.some((scope) => !request.requestedScopes.includes(scope))) {
+        throw new Error("ACCESS_REQUEST_INVALID_APPROVAL");
+      }
+      for (const accountId of accountIds) {
+        grants.push(await this.putGrant({
+          accountId,
+          agentId: request.agentId,
+          agentName: request.agentName,
+          serverId: request.serverId,
+          scopes,
+          enabled: true
+        }, input.ownerId));
+      }
+    }
+    const decided: AgentAccessRequest = {
+      ...request,
+      status: input.decision,
+      updatedAt: this.now().toISOString(),
+      decidedAt: this.now().toISOString()
+    };
+    this.accessRequests.set(decided.id, decided);
+    return { request: decided, grants };
+  }
+
   async putAgentSession(session: AgentSession) {
     this.sessions.set(session.tokenHash, session);
   }
 
   async getAgentSession(tokenHash: string) {
     const session = this.sessions.get(tokenHash);
-    return session && new Date(session.expiresAt).getTime() > Date.now() ? session : null;
+    return session && new Date(session.expiresAt).getTime() > this.now().getTime() ? session : null;
   }
 
   async deleteAgentSession(tokenHash: string) {

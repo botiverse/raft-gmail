@@ -32,12 +32,23 @@ interface AppDependencies {
   gmail: GmailGateway;
   now?: () => Date;
   randomToken?: () => string;
+  clientDistPath?: string;
 }
 
 const grantSchema = z.object({
   scopes: z.array(z.enum(grantScopes)).min(1).transform((items) => [...new Set(items)]),
   enabled: z.boolean().default(true)
 });
+const accessRequestSchema = z.object({
+  ownerRef: z.string().min(20).max(4096),
+  scopes: z.array(z.enum(grantScopes)).min(1).transform((items) => [...new Set(items)]),
+  reason: z.string().trim().min(1).max(1000)
+});
+const accessDecisionSchema = z.object({
+  accountIds: z.array(z.uuid()).min(1).max(20),
+  scopes: z.array(z.enum(grantScopes)).min(1).transform((items) => [...new Set(items)])
+});
+const accessRequestIdSchema = z.object({ requestId: z.uuid() });
 
 const accountSchema = z.object({ accountId: z.uuid() });
 const operationSchema = z.string().min(8).max(128).regex(/^[A-Za-z0-9._:-]+$/);
@@ -157,13 +168,13 @@ export function createApp(dependencies: AppDependencies) {
       outcome: "succeeded"
     });
     req.session = { principal, csrfToken: req.session?.csrfToken ?? randomToken() };
-    res.json({ ok: true, result: publicAccount(account) });
+    res.redirect("/?connected=1");
   }));
 
   app.get("/api/session", (req, res) => {
     const principal = req.session?.principal as RaftPrincipal | undefined;
     if (!principal) return sendError(res, 401, "SESSION_REQUIRED", "Login with Raft is required.");
-    res.json({ ok: true, principal, csrfToken: req.session?.csrfToken });
+    res.json({ ok: true, result: { principal, csrfToken: req.session?.csrfToken } });
   });
 
   app.get("/api/accounts", requireHuman, asyncRoute(async (req, res) => {
@@ -194,6 +205,71 @@ export function createApp(dependencies: AppDependencies) {
     res.json({ ok: true, result: grants });
   }));
 
+  app.get("/api/access-request-instructions", requireHuman, (req, res) => {
+    const principal = humanPrincipal(req);
+    const expiresAt = new Date(now().getTime() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    const ownerRef = signOwnerRef(
+      { ownerId: principal.id, serverId: principal.serverId, expiresAt },
+      config.SESSION_SECRET
+    );
+    const prompt = [
+      "Request Gmail access from me in Raft Gmail.",
+      `Use the gmail-access-request action with ownerRef ${ownerRef}.`,
+      "Ask only for gmail.read and/or gmail.draft, and explain why you need them.",
+      `This request code expires ${expiresAt}. Sending mail is not available.`
+    ].join(" ");
+    res.json({ ok: true, result: { prompt, ownerRef, expiresAt } });
+  });
+
+  app.get("/api/access-requests", requireHuman, asyncRoute(async (req, res) => {
+    const principal = humanPrincipal(req);
+    const requests = await repository.listAccessRequests(principal.id, principal.serverId);
+    res.json({ ok: true, result: requests });
+  }));
+
+  app.post("/api/access-requests/:requestId/approve", requireHuman, requireCsrf, asyncRoute(async (req, res) => {
+    const { requestId } = accessRequestIdSchema.parse(req.params);
+    const body = accessDecisionSchema.parse(req.body);
+    const principal = humanPrincipal(req);
+    const result = await repository.decideAccessRequest({
+      requestId,
+      ownerId: principal.id,
+      serverId: principal.serverId,
+      decision: "approved",
+      accountIds: body.accountIds,
+      scopes: body.scopes
+    });
+    await repository.appendAudit({
+      actorType: "human",
+      actorId: principal.id,
+      serverId: principal.serverId,
+      action: "gmail.access_request.approve",
+      outcome: "succeeded",
+      metadata: { requestId, accountIds: body.accountIds, scopes: body.scopes, agentId: result.request.agentId }
+    });
+    res.json({ ok: true, result });
+  }));
+
+  app.post("/api/access-requests/:requestId/deny", requireHuman, requireCsrf, asyncRoute(async (req, res) => {
+    const { requestId } = accessRequestIdSchema.parse(req.params);
+    const principal = humanPrincipal(req);
+    const result = await repository.decideAccessRequest({
+      requestId,
+      ownerId: principal.id,
+      serverId: principal.serverId,
+      decision: "denied"
+    });
+    await repository.appendAudit({
+      actorType: "human",
+      actorId: principal.id,
+      serverId: principal.serverId,
+      action: "gmail.access_request.deny",
+      outcome: "succeeded",
+      metadata: { requestId, agentId: result.request.agentId }
+    });
+    res.json({ ok: true, result: result.request });
+  }));
+
   app.put("/api/accounts/:accountId/grants/:agentId", requireHuman, requireCsrf, asyncRoute(async (req, res) => {
     const { accountId } = accountSchema.parse(req.params);
     const agentId = z.string().min(1).max(256).parse(req.params.agentId);
@@ -201,9 +277,14 @@ export function createApp(dependencies: AppDependencies) {
     const principal = humanPrincipal(req);
     const account = await repository.getGmailAccount(accountId);
     if (!isOwnedAccount(account, principal)) return sendError(res, 404, "ACCOUNT_NOT_FOUND", "Gmail account not found.");
+    const existing = await repository.getGrant(accountId, agentId, principal.serverId);
+    if (!existing) {
+      return sendError(res, 409, "ACCESS_REQUEST_REQUIRED", "The Agent must request access before a grant can be created.");
+    }
     const grant = await repository.putGrant({
       accountId,
       agentId,
+      agentName: existing.agentName,
       serverId: principal.serverId,
       scopes: body.scopes,
       enabled: body.enabled
@@ -218,6 +299,32 @@ export function createApp(dependencies: AppDependencies) {
       metadata: { agentId, scopes: body.scopes, enabled: body.enabled }
     });
     res.json({ ok: true, result: grant });
+  }));
+
+  app.post("/actions/gmail-access-request", requireAgentSession(repository), asyncRoute(async (req, res) => {
+    const body = accessRequestSchema.parse(req.body);
+    const owner = verifyOwnerRef(body.ownerRef, config.SESSION_SECRET, now());
+    const session = req.agentSession!;
+    if (!owner || owner.serverId !== session.serverId) {
+      return sendError(res, 400, "OWNER_REF_INVALID", "The access-request code is invalid or expired.");
+    }
+    const result = await repository.createAccessRequest({
+      ownerId: owner.ownerId,
+      serverId: owner.serverId,
+      agentId: session.agentId,
+      agentName: session.agentName,
+      requestedScopes: body.scopes,
+      reason: body.reason
+    });
+    await repository.appendAudit({
+      actorType: "agent",
+      actorId: session.agentId,
+      serverId: session.serverId,
+      action: "gmail.access_request.create",
+      outcome: "succeeded",
+      metadata: { requestId: result.id, requestedScopes: result.requestedScopes }
+    });
+    res.json({ ok: true, result });
   }));
 
   app.delete("/api/accounts/:accountId/grants/:agentId", requireHuman, requireCsrf, asyncRoute(async (req, res) => {
@@ -296,7 +403,14 @@ export function createApp(dependencies: AppDependencies) {
     });
   }));
 
+  if (dependencies.clientDistPath) {
+    app.use(express.static(dependencies.clientDistPath, { index: false }));
+  }
+
   app.get("/", (req, res) => {
+    if (dependencies.clientDistPath) {
+      return res.sendFile("index.html", { root: dependencies.clientDistPath });
+    }
     const principal = req.session?.principal as RaftPrincipal | undefined;
     res.type("html").send(`<!doctype html><html><head><meta charset="utf-8"><title>Raft Gmail</title></head><body><h1>Raft Gmail</h1><p>Self-hosted Gmail read and draft capabilities for explicitly authorized Raft Agents.</p><p>${principal ? `Signed in as ${escapeHtml(principal.name)}. <a href="/auth/google/start">Connect Gmail</a>` : '<a href="/auth/raft/login">Login with Raft</a>'}</p><p><a href="/.well-known/raft-app-manifest.json">App manifest</a></p></body></html>`);
   });
@@ -521,4 +635,37 @@ function escapeHtml(value: string) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
+}
+
+interface OwnerRefPayload {
+  ownerId: string;
+  serverId: string;
+  expiresAt: string;
+}
+
+function signOwnerRef(payload: OwnerRefPayload, secret: string) {
+  const encoded = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const signature = crypto.createHmac("sha256", secret).update(encoded).digest("base64url");
+  return `${encoded}.${signature}`;
+}
+
+function verifyOwnerRef(value: string, secret: string, now: Date): OwnerRefPayload | null {
+  const [encoded, signature, extra] = value.split(".");
+  if (!encoded || !signature || extra) return null;
+  const expected = crypto.createHmac("sha256", secret).update(encoded).digest();
+  let supplied: Buffer;
+  try {
+    supplied = Buffer.from(signature, "base64url");
+  } catch {
+    return null;
+  }
+  if (supplied.length !== expected.length || !crypto.timingSafeEqual(supplied, expected)) return null;
+  try {
+    const payload = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8")) as Partial<OwnerRefPayload>;
+    if (typeof payload.ownerId !== "string" || typeof payload.serverId !== "string" ||
+        typeof payload.expiresAt !== "string" || new Date(payload.expiresAt).getTime() <= now.getTime()) return null;
+    return payload as OwnerRefPayload;
+  } catch {
+    return null;
+  }
 }

@@ -1,5 +1,6 @@
 import type { Pool, PoolClient, QueryResultRow } from "pg";
 import type {
+  AgentAccessRequest,
   AgentGrant,
   AgentSession,
   AuditEvent,
@@ -23,10 +24,27 @@ function grantFromRow(row: QueryResultRow): AgentGrant {
   return {
     accountId: row.gmail_account_id,
     agentId: row.raft_agent_id,
+    agentName: row.agent_name,
     serverId: row.raft_server_id,
     scopes: row.scopes,
     enabled: row.enabled,
     updatedAt: new Date(row.updated_at).toISOString()
+  };
+}
+
+function accessRequestFromRow(row: QueryResultRow): AgentAccessRequest {
+  return {
+    id: row.id,
+    ownerId: row.owner_raft_user_id,
+    serverId: row.raft_server_id,
+    agentId: row.raft_agent_id,
+    agentName: row.agent_name,
+    requestedScopes: row.requested_scopes,
+    reason: row.reason,
+    status: row.status,
+    createdAt: new Date(row.created_at).toISOString(),
+    updatedAt: new Date(row.updated_at).toISOString(),
+    ...(row.decided_at ? { decidedAt: new Date(row.decided_at).toISOString() } : {})
   };
 }
 
@@ -71,12 +89,13 @@ export class PostgresRepository implements Repository {
     return this.withOwnedAccount(grant.accountId, ownerId, grant.serverId, async (client) => {
       const result = await client.query(
         `INSERT INTO account_agent_grants
-           (gmail_account_id, raft_agent_id, raft_server_id, scopes, enabled)
-         VALUES ($1, $2, $3, $4, $5)
+           (gmail_account_id, raft_agent_id, agent_name, raft_server_id, scopes, enabled)
+         VALUES ($1, $2, $3, $4, $5, $6)
          ON CONFLICT (gmail_account_id, raft_agent_id)
-         DO UPDATE SET scopes = EXCLUDED.scopes, enabled = EXCLUDED.enabled, updated_at = now()
+         DO UPDATE SET agent_name = EXCLUDED.agent_name, scopes = EXCLUDED.scopes,
+           enabled = EXCLUDED.enabled, updated_at = now()
          RETURNING *`,
-        [grant.accountId, grant.agentId, grant.serverId, grant.scopes, grant.enabled]
+        [grant.accountId, grant.agentId, grant.agentName, grant.serverId, grant.scopes, grant.enabled]
       );
       return grantFromRow(result.rows[0]);
     });
@@ -109,6 +128,95 @@ export class PostgresRepository implements Repository {
       );
       return result.rows.map(grantFromRow);
     });
+  }
+
+  async createAccessRequest(
+    request: Omit<AgentAccessRequest, "id" | "status" | "createdAt" | "updatedAt" | "decidedAt">
+  ): Promise<AgentAccessRequest> {
+    const result = await this.pool.query(
+      `INSERT INTO agent_access_requests
+         (owner_raft_user_id, raft_server_id, raft_agent_id, agent_name, requested_scopes, reason)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (owner_raft_user_id, raft_server_id, raft_agent_id) WHERE status = 'pending'
+       DO UPDATE SET agent_name = EXCLUDED.agent_name, requested_scopes = EXCLUDED.requested_scopes,
+         reason = EXCLUDED.reason, updated_at = now()
+       RETURNING *`,
+      [request.ownerId, request.serverId, request.agentId, request.agentName, request.requestedScopes, request.reason]
+    );
+    return accessRequestFromRow(result.rows[0]);
+  }
+
+  async listAccessRequests(ownerId: string, serverId: string): Promise<AgentAccessRequest[]> {
+    const result = await this.pool.query(
+      `SELECT * FROM agent_access_requests
+       WHERE owner_raft_user_id = $1 AND raft_server_id = $2
+       ORDER BY (status = 'pending') DESC, created_at DESC`,
+      [ownerId, serverId]
+    );
+    return result.rows.map(accessRequestFromRow);
+  }
+
+  async decideAccessRequest(input: {
+    requestId: string;
+    ownerId: string;
+    serverId: string;
+    decision: "approved" | "denied";
+    accountIds?: string[];
+    scopes?: AgentGrant["scopes"];
+  }): Promise<{ request: AgentAccessRequest; grants: AgentGrant[] }> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const requestResult = await client.query(
+        `SELECT * FROM agent_access_requests
+         WHERE id = $1 AND owner_raft_user_id = $2 AND raft_server_id = $3 FOR UPDATE`,
+        [input.requestId, input.ownerId, input.serverId]
+      );
+      const row = requestResult.rows[0];
+      if (!row) throw new Error("ACCESS_REQUEST_NOT_FOUND");
+      if (row.status !== "pending") throw new Error("ACCESS_REQUEST_ALREADY_DECIDED");
+
+      const grants: AgentGrant[] = [];
+      if (input.decision === "approved") {
+        const accountIds = [...new Set(input.accountIds ?? [])];
+        const scopes = [...new Set(input.scopes ?? [])];
+        if (!accountIds.length || !scopes.length || scopes.some((scope) => !row.requested_scopes.includes(scope))) {
+          throw new Error("ACCESS_REQUEST_INVALID_APPROVAL");
+        }
+        const owned = await client.query(
+          `SELECT id FROM gmail_accounts
+           WHERE id = ANY($1::uuid[]) AND owner_raft_user_id = $2 AND raft_server_id = $3 FOR UPDATE`,
+          [accountIds, input.ownerId, input.serverId]
+        );
+        if (owned.rowCount !== accountIds.length) throw new Error("GMAIL_ACCOUNT_NOT_FOUND");
+        for (const accountId of accountIds) {
+          const inserted = await client.query(
+            `INSERT INTO account_agent_grants
+               (gmail_account_id, raft_agent_id, agent_name, raft_server_id, scopes, enabled)
+             VALUES ($1, $2, $3, $4, $5, true)
+             ON CONFLICT (gmail_account_id, raft_agent_id)
+             DO UPDATE SET agent_name = EXCLUDED.agent_name, scopes = EXCLUDED.scopes,
+               enabled = true, updated_at = now()
+             RETURNING *`,
+            [accountId, row.raft_agent_id, row.agent_name, input.serverId, scopes]
+          );
+          grants.push(grantFromRow(inserted.rows[0]));
+        }
+      }
+
+      const decided = await client.query(
+        `UPDATE agent_access_requests SET status = $2, decided_at = now(), updated_at = now()
+         WHERE id = $1 RETURNING *`,
+        [input.requestId, input.decision]
+      );
+      await client.query("COMMIT");
+      return { request: accessRequestFromRow(decided.rows[0]), grants };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async putAgentSession(session: AgentSession): Promise<void> {

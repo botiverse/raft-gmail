@@ -13,7 +13,8 @@ The output destination is deliberately not part of the account model. A synchron
 | Raft human | Owns connected accounts and grants on the token-bound Raft Server. |
 | Raft Agent | Uses its own Login with Raft identity and a short-lived service-local session. |
 | Gmail account | Holds an encrypted Google refresh token owned by one Raft human on one Server. |
-| Agent grant | Names one account, one Agent ID, one Server, and one or both v1 scopes. |
+| Access request | Captures the authenticated Agent ID/name, requested scopes, reason, owner, and Server. It confers no capability. |
+| Agent grant | Names one account, one authenticated Agent ID/name snapshot, one Server, and one or both v1 scopes. |
 | Provider token | Never returned through owner APIs, Agent actions, manifests, logs, or audit metadata. |
 | Output | Returned to the caller; no fixed channel or server-side delivery guess. |
 
@@ -23,12 +24,19 @@ Account existence is hidden across Server boundaries: an Agent from another Serv
 
 | Action | Grant | Mailbox mutation |
 | --- | --- | --- |
+| `gmail-access-request` | none; signed owner reference + authenticated Agent session | none; creates/updates a pending approval request |
 | `gmail-search` | `gmail.read` | none |
 | `gmail-read` | `gmail.read` | none |
 | `gmail-draft-create` | `gmail.draft` | creates a draft |
 | `gmail-draft-update` | `gmail.draft` | updates a draft |
 
 There is no send, schedule, delete, archive, or mark-read route. The Google `gmail.compose` scope still technically permits send; this narrower contract is enforced by the service implementation and must be reviewed on every change.
+
+## Access-request and approval boundary
+
+The owner dashboard does not create a grant from a manually typed Agent ID. It creates a time-limited signed owner reference and a copyable prompt. An Agent authenticates with Login with Raft and submits that reference, requested scopes, and a reason through `gmail-access-request`; the service records the principal ID and name from the authenticated Agent session.
+
+A human may then approve a subset of the requested scopes for one or more owned Gmail accounts, or deny the request. Approval locks and consumes one pending request and writes all selected account grants in the same database transaction. A direct grant edit only works for an existing approved grant. This makes “request” and “capability” distinct states and prevents a typed display name or UUID from conferring access.
 
 ## Draft idempotency
 
@@ -53,6 +61,7 @@ A future app-native scheduler is justified only for monitors that must run while
 
 - `gmail_accounts`: owner Raft user, Raft Server, Gmail address, encrypted refresh token.
 - `account_agent_grants`: exact Agent, Server, scopes, enabled state.
+- `agent_access_requests`: owner, Server, authenticated Agent ID/name snapshot, requested scopes, reason, and decision state.
 - `agent_sessions`: hash of opaque local token, Agent identity, Server, expiry.
 - `draft_operations`: idempotency key, request hash, pending/succeeded state, provider draft ID.
 - `audit_events`: actor, Server, account reference, action, outcome, operation ID, content-free metadata.

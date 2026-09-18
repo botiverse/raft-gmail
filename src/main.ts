@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import { Pool } from "pg";
 import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
@@ -14,7 +15,8 @@ const app = createApp({
   tokenVault: createTokenVault(config.TOKEN_ENCRYPTION_KEY_BASE64),
   raftIdentity: createRaftIdentityProvider(config),
   googleIdentity: createGoogleIdentityProvider(config),
-  gmail: createGmailGateway(config)
+  gmail: createGmailGateway(config),
+  clientDistPath: resolve(process.cwd(), "dist/client")
 });
 
 const server = app.listen(config.PORT, () => {

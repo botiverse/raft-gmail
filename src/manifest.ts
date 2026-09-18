@@ -24,6 +24,7 @@ export function buildManifest(appOrigin: string) {
       }
     },
     actions: [
+      action("gmail-access-request", "/actions/gmail-access-request", "Request human approval for read and/or draft access to selected Gmail accounts."),
       action("gmail-search", "/actions/gmail-search", "Search an authorized Gmail account without changing mailbox state."),
       action("gmail-read", "/actions/gmail-read", "Read one message from an authorized Gmail account."),
       action("gmail-draft-create", "/actions/gmail-draft-create", "Create a draft in an authorized Gmail account."),
