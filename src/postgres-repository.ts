@@ -101,6 +101,30 @@ export class PostgresRepository implements Repository {
     });
   }
 
+  async updateGrant(input: {
+    accountId: string;
+    agentId: string;
+    ownerId: string;
+    serverId: string;
+    scopes: AgentGrant["scopes"];
+    enabled: boolean;
+  }): Promise<AgentGrant | null> {
+    const result = await this.pool.query(
+      `UPDATE account_agent_grants AS grants
+       SET scopes = $5, enabled = $6, updated_at = now()
+       FROM gmail_accounts AS accounts
+       WHERE grants.gmail_account_id = $1
+         AND grants.raft_agent_id = $2
+         AND accounts.id = grants.gmail_account_id
+         AND accounts.owner_raft_user_id = $3
+         AND accounts.raft_server_id = $4
+         AND grants.raft_server_id = $4
+       RETURNING grants.*`,
+      [input.accountId, input.agentId, input.ownerId, input.serverId, input.scopes, input.enabled]
+    );
+    return result.rows[0] ? grantFromRow(result.rows[0]) : null;
+  }
+
   async deleteGrant(accountId: string, agentId: string, ownerId: string, serverId: string): Promise<boolean> {
     return this.withOwnedAccount(accountId, ownerId, serverId, async (client) => {
       const result = await client.query(

@@ -23,9 +23,9 @@ const config: Config = {
   GOOGLE_CLIENT_SECRET: "google-secret"
 };
 
-function fixture() {
+function fixture(repository?: MemoryRepository) {
   const now = () => new Date("2026-09-18T00:00:00.000Z");
-  const repository = new MemoryRepository(now);
+  repository ??= new MemoryRepository(now);
   const gmail = new FakeGmail();
   let tokenCounter = 0;
   const principals: Record<string, RaftPrincipal> = {
@@ -154,8 +154,8 @@ describe("Raft Gmail capability boundary", () => {
       .put(`/api/accounts/${accountId}/grants/agent-a`)
       .set("x-csrf-token", csrf)
       .send({ scopes: ["gmail.read"], enabled: true })
-      .expect(409);
-    assert.equal(blocked.body.error.code, "ACCESS_REQUEST_REQUIRED");
+      .expect(404);
+    assert.equal(blocked.body.error.code, "GRANT_NOT_FOUND");
 
     const instructions = await human.get("/api/access-request-instructions").expect(200);
     const token = await loginAgent(app, "agentA");
@@ -276,6 +276,46 @@ describe("Raft Gmail capability boundary", () => {
       .set("authorization", `Bearer ${token}`)
       .send({ accountId, query: "newer_than:7d" })
       .expect(403);
+  });
+
+  it("does not recreate a grant when revoke wins a concurrent edit", async () => {
+    const repository = new MemoryRepository();
+    const originalGetGrant = repository.getGrant.bind(repository);
+    const originalUpdateGrant = repository.updateGrant.bind(repository);
+    let raceArmed = false;
+
+    // Model the delete-first serialization outcome for both the old
+    // read-then-upsert path and the atomic update path. The old path reads the
+    // grant, loses it to revoke, then recreates it; the atomic path returns no row.
+    repository.getGrant = async (...args) => {
+      const existing = await originalGetGrant(...args);
+      if (raceArmed && existing) {
+        await repository.deleteGrant(args[0], args[1], "human-1", args[2]);
+      }
+      return existing;
+    };
+    repository.updateGrant = async (input) => {
+      if (raceArmed) {
+        await repository.deleteGrant(input.accountId, input.agentId, input.ownerId, input.serverId);
+      }
+      return originalUpdateGrant(input);
+    };
+
+    const { app } = fixture(repository);
+    const human = request.agent(app);
+    await loginHuman(human);
+    const accountId = await connectGmail(human);
+    await putGrant(repository, accountId, "agent-a", ["gmail.read"]);
+    const csrf = await csrfToken(human);
+    raceArmed = true;
+
+    const staleEdit = await human
+      .put(`/api/accounts/${accountId}/grants/agent-a`)
+      .set("x-csrf-token", csrf)
+      .send({ scopes: ["gmail.read", "gmail.draft"], enabled: true })
+      .expect(404);
+    assert.equal(staleEdit.body.error.code, "GRANT_NOT_FOUND");
+    assert.equal(await originalGetGrant(accountId, "agent-a", "server-1"), null);
   });
 
   it("lets a draft-granted Agent create directly and safely replays the same operation", async () => {

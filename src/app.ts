@@ -275,20 +275,15 @@ export function createApp(dependencies: AppDependencies) {
     const agentId = z.string().min(1).max(256).parse(req.params.agentId);
     const body = grantSchema.parse(req.body);
     const principal = humanPrincipal(req);
-    const account = await repository.getGmailAccount(accountId);
-    if (!isOwnedAccount(account, principal)) return sendError(res, 404, "ACCOUNT_NOT_FOUND", "Gmail account not found.");
-    const existing = await repository.getGrant(accountId, agentId, principal.serverId);
-    if (!existing) {
-      return sendError(res, 409, "ACCESS_REQUEST_REQUIRED", "The Agent must request access before a grant can be created.");
-    }
-    const grant = await repository.putGrant({
+    const grant = await repository.updateGrant({
       accountId,
       agentId,
-      agentName: existing.agentName,
+      ownerId: principal.id,
       serverId: principal.serverId,
       scopes: body.scopes,
       enabled: body.enabled
-    }, principal.id);
+    });
+    if (!grant) return sendError(res, 404, "GRANT_NOT_FOUND", "Agent grant not found.");
     await repository.appendAudit({
       actorType: "human",
       actorId: principal.id,
