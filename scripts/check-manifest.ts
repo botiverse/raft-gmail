@@ -4,9 +4,18 @@ import { buildManifest } from "../src/manifest.js";
 const manifest = buildManifest("https://example.test");
 const actionNames = manifest.actions.map((action) => action.name);
 
+assert.equal(manifest.schema, "raft-agent-manifest.v0");
+assert.deepEqual(manifest.execution, { mode: "http_api", base_url: "https://example.test" });
+assert.deepEqual(manifest.auth, {
+  type: "login_with_raft",
+  login_url: "https://example.test/auth/raft/login"
+});
 assert.deepEqual(actionNames, ["gmail-access-request", "gmail-search", "gmail-read", "gmail-draft-create", "gmail-draft-update"]);
 assert.equal(actionNames.some((name) => /send|schedule|delete|archive|mark.?read/i.test(name)), false);
 assert.equal(JSON.stringify(manifest).includes("gmail.send"), true);
-assert.deepEqual(manifest.oauth.redirectUris, ["https://example.test/auth/raft/callback"]);
-assert.equal(manifest.agentLogin.callback, "https://example.test/auth/raft/callback");
+for (const action of manifest.actions) {
+  assert.equal(action.endpoint.method, "POST");
+  assert.match(action.endpoint.path, /^\/actions\/gmail-/);
+  assert.equal("response" in action, false);
+}
 process.stdout.write("manifest capability boundary verified\n");

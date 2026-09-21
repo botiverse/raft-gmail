@@ -62,7 +62,7 @@ Open <http://localhost:5173> and use the owner dashboard to:
 4. open **Access requests**, choose one or more Gmail accounts, and approve read, draft, or both permissions (or deny the request);
 5. pause, edit, or revoke any account-specific grant at any time.
 
-The dashboard deliberately has no send action. The public Agent manifest is available at `/.well-known/raft-app-manifest.json` and `/.well-known/raft-agent-manifest.json` through either the Vite proxy or the service.
+The dashboard deliberately has no send action. The public Agent manifest is available at `/.well-known/raft-app-manifest.json` and `/.well-known/raft-agent-manifest.json` through either the Vite proxy or the service. It uses the `raft-agent-manifest.v0` HTTP-action contract consumed by `raft integration invoke`.
 
 For a production-style local run, use `npm run build && npm start`; the service then serves the compiled dashboard and API together at <http://localhost:4184>. Set `APP_ORIGIN` and all registered OAuth callbacks to that deployed origin.
 
@@ -134,7 +134,7 @@ The `PUT` route edits an existing approved grant; it cannot create a grant for a
 
 ## Agent actions
 
-An Agent completes Login with Raft through `/auth/raft/callback`, then uses the returned service-local bearer token. Action responses are structured JSON returned directly to the caller. Human and Agent logins share one callback because a registered Raft OAuth app has one exact return URL; the service branches only after Raft returns the authenticated principal type.
+An Agent completes Login with Raft through `/auth/raft/callback`. The callback creates a service-local session, sets the signed cookie consumed by `raft integration login`, and also returns the service-local bearer token for direct API clients; the raw Raft token is never exposed. Action responses are structured JSON returned directly to the caller. Human and Agent logins share one callback because a registered Raft OAuth app has one exact return URL; the service branches only after Raft returns the authenticated principal type.
 
 `gmail-access-request` accepts the signed `ownerRef` copied from the owner's prompt, the requested scopes, and a reason. The service takes the Agent ID and display name from the authenticated Agent session. The request creates no grant until the human approves it for selected accounts.
 
