@@ -6,10 +6,10 @@ import { createTokenVault } from "./crypto.js";
 import { D1Repository, type D1DatabaseLike } from "./d1-repository.js";
 import { createGmailGateway } from "./gmail.js";
 import { createGoogleIdentityProvider, createRaftIdentityProvider } from "./identity.js";
+import { createLazyD1Database } from "./worker-bindings.js";
 
 const config = loadConfig();
-const database = env.DB as D1DatabaseLike | undefined;
-if (!database) throw new Error("Cloudflare D1 binding DB is required.");
+const database = createLazyD1Database(() => env.DB as D1DatabaseLike | undefined);
 
 const app = createApp({
   config,
