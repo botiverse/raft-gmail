@@ -21,6 +21,12 @@ export function buildManifest(appOrigin: string, service = "raft-gmail") {
     },
     actions: [
       action(
+        "gmail-accounts-list",
+        "/actions/gmail-accounts-list",
+        "List Gmail accounts and scopes currently authorized for this Agent.",
+        {}
+      ),
+      action(
         "gmail-access-request",
         "/actions/gmail-access-request",
         "Request human approval for read and/or draft access to selected Gmail accounts.",

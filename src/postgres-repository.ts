@@ -4,6 +4,7 @@ import type {
   AgentGrant,
   AgentSession,
   AuditEvent,
+  AuthorizedAgentAccount,
   DraftOperation,
   GmailAccount,
   Repository
@@ -152,6 +153,34 @@ export class PostgresRepository implements Repository {
       );
       return result.rows.map(grantFromRow);
     });
+  }
+
+  async listAuthorizedAgentAccounts(agentId: string, serverId: string): Promise<AuthorizedAgentAccount[]> {
+    const result = await this.pool.query(
+      `SELECT accounts.id AS account_id,
+              accounts.email,
+              accounts.owner_raft_user_id AS owner_id,
+              grants.scopes,
+              accounts.created_at AS connected_at,
+              grants.updated_at AS grant_updated_at
+       FROM account_agent_grants AS grants
+       INNER JOIN gmail_accounts AS accounts ON accounts.id = grants.gmail_account_id
+       WHERE grants.raft_agent_id = $1
+         AND grants.raft_server_id = $2
+         AND accounts.raft_server_id = $2
+         AND grants.enabled = true
+       ORDER BY accounts.id`,
+      [agentId, serverId]
+    );
+    return result.rows.map((row) => ({
+      accountId: row.account_id,
+      email: row.email,
+      ownerId: row.owner_id,
+      scopes: row.scopes,
+      status: "active" as const,
+      connectedAt: new Date(row.connected_at).toISOString(),
+      grantUpdatedAt: new Date(row.grant_updated_at).toISOString()
+    }));
   }
 
   async createAccessRequest(

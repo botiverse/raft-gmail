@@ -59,4 +59,11 @@ describe("Cloudflare Worker D1 binding", () => {
     assert.match(source, /createLazyD1Database\(\(\) => env\.DB as D1DatabaseLike \| undefined\)/);
     assert.doesNotMatch(source, /const database = env\.DB/);
   });
+
+  test("pins the production Agent session TTL to one hour", async () => {
+    const source = await readFile(new URL("../wrangler.jsonc", import.meta.url), "utf8");
+
+    assert.match(source, /"AGENT_SESSION_TTL_SECONDS"\s*:\s*"3600"/);
+    assert.match(source, /"database_name"\s*:\s*"raft-gmail"/);
+  });
 });

@@ -4,6 +4,7 @@ import type {
   AgentGrant,
   AgentSession,
   AuditEvent,
+  AuthorizedAgentAccount,
   DraftOperation,
   GmailAccount,
   GrantScope,
@@ -226,6 +227,33 @@ export class D1Repository implements Repository {
       "SELECT * FROM account_agent_grants WHERE gmail_account_id = ? ORDER BY raft_agent_id"
     ).bind(accountId).all<Row>();
     return (result.results ?? []).map(grantFromRow);
+  }
+
+  async listAuthorizedAgentAccounts(agentId: string, serverId: string): Promise<AuthorizedAgentAccount[]> {
+    const result = await this.database.prepare(
+      `SELECT accounts.id AS account_id,
+              accounts.email AS email,
+              accounts.owner_raft_user_id AS owner_id,
+              grants.scopes_json AS scopes_json,
+              accounts.created_at AS connected_at,
+              grants.updated_at AS grant_updated_at
+       FROM account_agent_grants AS grants
+       INNER JOIN gmail_accounts AS accounts ON accounts.id = grants.gmail_account_id
+       WHERE grants.raft_agent_id = ?
+         AND grants.raft_server_id = ?
+         AND accounts.raft_server_id = ?
+         AND grants.enabled = 1
+       ORDER BY accounts.id`
+    ).bind(agentId, serverId, serverId).all<Row>();
+    return (result.results ?? []).map((row) => ({
+      accountId: stringValue(row, "account_id"),
+      email: stringValue(row, "email"),
+      ownerId: stringValue(row, "owner_id"),
+      scopes: scopesFromRow(row, "scopes_json"),
+      status: "active",
+      connectedAt: stringValue(row, "connected_at"),
+      grantUpdatedAt: stringValue(row, "grant_updated_at")
+    }));
   }
 
   async createAccessRequest(
