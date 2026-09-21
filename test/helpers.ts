@@ -110,6 +110,8 @@ export class MemoryRepository implements Repository {
         if (!account || account.serverId !== serverId) return [];
         return [{
           accountId: account.id,
+          email: account.email,
+          ownerId: account.ownerId,
           scopes: grant.scopes,
           status: "active" as const,
           connectedAt: account.createdAt,

@@ -139,7 +139,7 @@ An Agent completes Login with Raft through `/auth/raft/callback`. The callback c
 
 Agent sessions last one hour by default and expire exactly at their returned `expiresAt` timestamp. Expiry does not change the underlying Gmail grant; the Agent can complete Login with Raft again and continue with the same currently enabled scopes.
 
-`gmail-accounts-list` returns only accounts with a currently enabled grant for the authenticated Agent on the same Raft Server. Each row contains the account UUID, granted scopes, active status, connection time, and grant update time; it never returns the owner's email or encrypted Google token. Revoked or disabled grants disappear immediately.
+`gmail-accounts-list` returns only accounts with a currently enabled grant for the authenticated Agent on the same Raft Server. Each row contains the account UUID, email, Raft owner ID, granted scopes, active status, connection time, and grant update time so the Agent can select the intended account; it never returns the encrypted Google token or a separate server ID. Revoked or disabled grants disappear immediately.
 
 `gmail-access-request` accepts the signed `ownerRef` copied from the owner's prompt, the requested scopes, and a reason. The service takes the Agent ID and display name from the authenticated Agent session. The request creates no grant until the human approves it for selected accounts.
 

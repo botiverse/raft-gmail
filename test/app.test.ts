@@ -364,7 +364,7 @@ describe("Raft Gmail capability boundary", () => {
     assert.equal(gmail.searchCalls, 1);
   });
 
-  it("lets an Agent discover only its active same-server account grants without identity or token fields", async () => {
+  it("lets an Agent identify only its active same-server account grants without token or server fields", async () => {
     const { app, repository, gmail } = fixture();
     const vault = createTokenVault(config.TOKEN_ENCRYPTION_KEY_BASE64);
     const active = await repository.upsertGmailAccount({
@@ -433,12 +433,14 @@ describe("Raft Gmail capability boundary", () => {
       .expect(200);
     assert.deepEqual(listed.body.result, [{
       accountId: active.id,
+      email: "owner@example.com",
+      ownerId: "human-1",
       scopes: ["gmail.read", "gmail.draft"],
       status: "active",
       connectedAt: "2026-09-18T00:00:00.000Z",
       grantUpdatedAt: "2026-09-18T00:00:00.000Z"
     }]);
-    for (const forbidden of ["email", "ownerId", "serverId", "encryptedRefreshToken"]) {
+    for (const forbidden of ["serverId", "encryptedRefreshToken"]) {
       assert.equal(forbidden in listed.body.result[0], false);
     }
     assert.equal(gmail.searchCalls + gmail.readCalls + gmail.createCalls + gmail.updateCalls, 0);

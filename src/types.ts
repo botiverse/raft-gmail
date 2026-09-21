@@ -31,6 +31,8 @@ export interface AgentGrant {
 
 export interface AuthorizedAgentAccount {
   accountId: string;
+  email: string;
+  ownerId: string;
   scopes: GrantScope[];
   status: "active";
   connectedAt: string;

@@ -232,6 +232,8 @@ export class D1Repository implements Repository {
   async listAuthorizedAgentAccounts(agentId: string, serverId: string): Promise<AuthorizedAgentAccount[]> {
     const result = await this.database.prepare(
       `SELECT accounts.id AS account_id,
+              accounts.email AS email,
+              accounts.owner_raft_user_id AS owner_id,
               grants.scopes_json AS scopes_json,
               accounts.created_at AS connected_at,
               grants.updated_at AS grant_updated_at
@@ -245,6 +247,8 @@ export class D1Repository implements Repository {
     ).bind(agentId, serverId, serverId).all<Row>();
     return (result.results ?? []).map((row) => ({
       accountId: stringValue(row, "account_id"),
+      email: stringValue(row, "email"),
+      ownerId: stringValue(row, "owner_id"),
       scopes: scopesFromRow(row, "scopes_json"),
       status: "active",
       connectedAt: stringValue(row, "connected_at"),

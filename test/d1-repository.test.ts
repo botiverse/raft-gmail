@@ -166,6 +166,8 @@ describe("D1Repository", () => {
     assert.equal(listed.length, 1);
     assert.deepEqual(listed[0], {
       accountId: active.id,
+      email: "active@example.com",
+      ownerId: "owner-1",
       scopes: ["gmail.read", "gmail.draft"],
       status: "active",
       connectedAt: active.createdAt,

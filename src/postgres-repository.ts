@@ -158,6 +158,8 @@ export class PostgresRepository implements Repository {
   async listAuthorizedAgentAccounts(agentId: string, serverId: string): Promise<AuthorizedAgentAccount[]> {
     const result = await this.pool.query(
       `SELECT accounts.id AS account_id,
+              accounts.email,
+              accounts.owner_raft_user_id AS owner_id,
               grants.scopes,
               accounts.created_at AS connected_at,
               grants.updated_at AS grant_updated_at
@@ -172,6 +174,8 @@ export class PostgresRepository implements Repository {
     );
     return result.rows.map((row) => ({
       accountId: row.account_id,
+      email: row.email,
+      ownerId: row.owner_id,
       scopes: row.scopes,
       status: "active" as const,
       connectedAt: new Date(row.connected_at).toISOString(),
