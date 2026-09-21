@@ -22,7 +22,8 @@
     {
       "binding": "DB",
       "database_name": "raft-gmail",
-      "database_id": "00000000-0000-0000-0000-000000000000"
+      "database_id": "dffc0255-1843-4e41-b667-10cf8beb0a1f",
+      "migrations_dir": "migrations/d1"
     }
   ],
   "assets": {

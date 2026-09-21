@@ -67,7 +67,7 @@ describe("D1Repository", () => {
 
   beforeEach(() => {
     database = new DatabaseSync(":memory:");
-    database.exec(readFileSync(new URL("../migrations/0001_d1.sql", import.meta.url), "utf8"));
+    database.exec(readFileSync(new URL("../migrations/d1/0001_initial.sql", import.meta.url), "utf8"));
     repository = new D1Repository(new SqliteD1Database(database));
   });
 

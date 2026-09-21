@@ -76,10 +76,10 @@ The Cloudflare deployment uses one Worker for the Express API and static dashboa
    npx wrangler d1 create raft-gmail
    ```
 
-2. Apply the D1 schema:
+2. Apply the journaled D1 migrations from the dedicated `migrations/d1` directory:
 
    ```bash
-   npx wrangler d1 execute raft-gmail --remote --file=./migrations/0001_d1.sql
+   npx wrangler d1 migrations apply DB --remote
    ```
 
 3. Store the six sensitive values as Worker secrets (never put their values in `wrangler.jsonc`):
