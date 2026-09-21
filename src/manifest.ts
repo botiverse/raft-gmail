@@ -10,11 +10,11 @@ export function buildManifest(appOrigin: string) {
       setupUrl: "https://app.raft.build/login-with-raft/setup",
       tokenUrl: "https://api.raft.build/api/oauth/token",
       userinfoUrl: "https://api.raft.build/api/oauth/userinfo",
-      redirectUris: [`${appOrigin}/auth/raft/callback`, `${appOrigin}/auth/raft/agent/callback`],
+      redirectUris: [`${appOrigin}/auth/raft/callback`],
       scopes: ["openid", "profile", "identity"]
     },
     agentLogin: {
-      callback: `${appOrigin}/auth/raft/agent/callback`,
+      callback: `${appOrigin}/auth/raft/callback`,
       returns: "service-local-agent-session",
       rawRaftTokenExposure: false,
       revoke: {

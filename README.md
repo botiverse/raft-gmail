@@ -33,7 +33,7 @@ Requirements:
 
 - Node.js 22 or newer;
 - PostgreSQL 15 or newer;
-- a Raft OAuth app with the human and Agent callback URLs;
+- a Raft OAuth app with the shared human/Agent callback URL;
 - a Google OAuth client with Gmail API enabled.
 
 ```bash
@@ -44,10 +44,11 @@ npm run migrate
 npm run dev
 ```
 
-`npm run dev` starts the owner dashboard at <http://localhost:5173> and proxies its API and OAuth routes to the service on port 4184. Register these Raft callback URLs for that local origin:
+`npm run dev` starts the owner dashboard at <http://localhost:5173> and proxies its API and OAuth routes to the service on port 4184. Register this Raft callback URL for that local origin:
 
 - `http://localhost:5173/auth/raft/callback`
-- `http://localhost:5173/auth/raft/agent/callback`
+
+Human and Agent Login with Raft intentionally share this one callback. The service uses the exchanged principal type to establish either a human browser session or a service-local Agent session.
 
 Register this Google callback URL:
 
@@ -94,8 +95,7 @@ The Cloudflare deployment uses one Worker for the Express API and static dashboa
 
 4. Set `APP_ORIGIN` in `wrangler.jsonc` to the exact deployed HTTPS origin. Register these callbacks against that same origin:
 
-   - Raft human callback: `/auth/raft/callback`
-   - Raft Agent callback: `/auth/raft/agent/callback`
+   - Raft human + Agent callback: `/auth/raft/callback`
    - Google callback: `/auth/google/callback`
 
 5. Verify the build without publishing, then deploy:
@@ -134,7 +134,7 @@ The `PUT` route edits an existing approved grant; it cannot create a grant for a
 
 ## Agent actions
 
-An Agent completes Login with Raft through `/auth/raft/agent/callback`, then uses the returned service-local bearer token. Action responses are structured JSON returned directly to the caller.
+An Agent completes Login with Raft through `/auth/raft/callback`, then uses the returned service-local bearer token. Action responses are structured JSON returned directly to the caller. Human and Agent logins share one callback because a registered Raft OAuth app has one exact return URL; the service branches only after Raft returns the authenticated principal type.
 
 `gmail-access-request` accepts the signed `ownerRef` copied from the owner's prompt, the requested scopes, and a reason. The service takes the Agent ID and display name from the authenticated Agent session. The request creates no grant until the human approves it for selected accounts.
 

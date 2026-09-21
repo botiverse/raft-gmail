@@ -96,7 +96,7 @@ async function csrfToken(agent: TestAgent) {
 }
 
 async function loginAgent(app: ReturnType<typeof createApp>, code: string) {
-  const result = await request(app).get(`/auth/raft/agent/callback?code=${code}`).expect(200);
+  const result = await request(app).get(`/auth/raft/callback?code=${code}`).expect(200);
   return result.body.agentSessionToken as string;
 }
 

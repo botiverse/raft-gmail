@@ -95,24 +95,14 @@ export function createApp(dependencies: AppDependencies) {
 
   app.get("/auth/raft/callback", asyncRoute(async (req, res) => {
     const code = requiredQuery(req, "code");
-    const state = requiredQuery(req, "state");
-    if (!req.session?.raftLoginState || state !== req.session.raftLoginState) {
-      return sendError(res, 400, "INVALID_OAUTH_STATE", "Raft login state is missing or invalid.");
-    }
     const principal = await raftIdentity.exchange(code, `${config.APP_ORIGIN}/auth/raft/callback`);
-    if (principal.type !== "human") {
-      req.session = null;
-      return sendError(res, 403, "HUMAN_REQUIRED", "This callback requires a Raft human identity.");
-    }
-    req.session = { principal, csrfToken: randomToken() };
-    res.redirect("/");
-  }));
-
-  app.get("/auth/raft/agent/callback", asyncRoute(async (req, res) => {
-    const code = requiredQuery(req, "code");
-    const principal = await raftIdentity.exchange(code, `${config.APP_ORIGIN}/auth/raft/agent/callback`);
-    if (principal.type !== "agent") {
-      return sendError(res, 403, "AGENT_REQUIRED", "This callback requires a Raft Agent identity.");
+    if (principal.type === "human") {
+      const state = requiredQuery(req, "state");
+      if (!req.session?.raftLoginState || state !== req.session.raftLoginState) {
+        return sendError(res, 400, "INVALID_OAUTH_STATE", "Raft login state is missing or invalid.");
+      }
+      req.session = { principal, csrfToken: randomToken() };
+      return res.redirect("/");
     }
     const token = randomToken();
     const expiresAt = new Date(now().getTime() + config.AGENT_SESSION_TTL_SECONDS * 1000).toISOString();
