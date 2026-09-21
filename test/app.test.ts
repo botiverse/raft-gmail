@@ -349,6 +349,14 @@ describe("Raft Gmail capability boundary", () => {
     assert.equal(replayed.body.result.replayed, true);
     assert.equal(gmail.createCalls, 1);
 
+    const reused = await request(app)
+      .post("/actions/gmail-draft-create")
+      .set("authorization", `Bearer ${token}`)
+      .send({ ...payload, subject: "A different draft" })
+      .expect(409);
+    assert.equal(reused.body.error.code, "OPERATION_ID_REUSED");
+    assert.equal(gmail.createCalls, 1);
+
     const updated = await request(app)
       .post("/actions/gmail-draft-update")
       .set("authorization", `Bearer ${token}`)

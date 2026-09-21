@@ -143,6 +143,79 @@ describe("D1Repository", () => {
     assert.equal(Boolean(grant), finalRequest.status === "approved");
   });
 
+  test("rejects approving an account owned by another Raft user without creating a grant", async () => {
+    const foreignAccount = await repository.upsertGmailAccount({
+      ownerId: "owner-2",
+      serverId: "server-1",
+      email: "other-owner@example.com",
+      encryptedRefreshToken: "encrypted"
+    });
+    const accessRequest = await repository.createAccessRequest({
+      ownerId: "owner-1",
+      serverId: "server-1",
+      agentId: "agent-1",
+      agentName: "Dian",
+      requestedScopes: ["gmail.read"],
+      reason: "Manage Cindy's Gmail"
+    });
+
+    await assert.rejects(
+      repository.decideAccessRequest({
+        requestId: accessRequest.id,
+        ownerId: "owner-1",
+        serverId: "server-1",
+        decision: "approved",
+        accountIds: [foreignAccount.id],
+        scopes: ["gmail.read"]
+      }),
+      /GMAIL_ACCOUNT_NOT_FOUND/
+    );
+    assert.equal(await repository.getGrant(foreignAccount.id, "agent-1", "server-1"), null);
+    assert.equal((await repository.listAccessRequests("owner-1", "server-1"))[0]?.status, "pending");
+  });
+
+  test("pins grants to the winning concurrent approval nonce", async () => {
+    const firstAccount = await repository.upsertGmailAccount({
+      ownerId: "owner-1",
+      serverId: "server-1",
+      email: "first@example.com",
+      encryptedRefreshToken: "encrypted"
+    });
+    const secondAccount = await repository.upsertGmailAccount({
+      ownerId: "owner-1",
+      serverId: "server-1",
+      email: "second@example.com",
+      encryptedRefreshToken: "encrypted"
+    });
+    const accessRequest = await repository.createAccessRequest({
+      ownerId: "owner-1",
+      serverId: "server-1",
+      agentId: "agent-1",
+      agentName: "Dian",
+      requestedScopes: ["gmail.read"],
+      reason: "Manage Cindy's Gmail"
+    });
+    const accountIds = [firstAccount.id, secondAccount.id];
+
+    const results = await Promise.allSettled(accountIds.map((accountId) =>
+      repository.decideAccessRequest({
+        requestId: accessRequest.id,
+        ownerId: "owner-1",
+        serverId: "server-1",
+        decision: "approved",
+        accountIds: [accountId],
+        scopes: ["gmail.read"]
+      })
+    ));
+
+    assert.equal(results.filter((result) => result.status === "fulfilled").length, 1);
+    assert.equal(results.filter((result) => result.status === "rejected").length, 1);
+    const winnerIndex = results.findIndex((result) => result.status === "fulfilled");
+    const loserIndex = winnerIndex === 0 ? 1 : 0;
+    assert.ok(await repository.getGrant(accountIds[winnerIndex]!, "agent-1", "server-1"));
+    assert.equal(await repository.getGrant(accountIds[loserIndex]!, "agent-1", "server-1"), null);
+  });
+
   test("does not recreate a deleted grant through a later edit", async () => {
     const account = await repository.upsertGmailAccount({
       ownerId: "owner-1",
