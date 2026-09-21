@@ -3,7 +3,7 @@ import { z } from "zod";
 const configSchema = z.object({
   APP_ORIGIN: z.url().transform((value) => value.replace(/\/+$/, "")),
   PORT: z.coerce.number().int().positive().default(4184),
-  DATABASE_URL: z.string().min(1),
+  DATABASE_URL: z.string().min(1).optional(),
   SESSION_SECRET: z.string().min(32),
   TOKEN_ENCRYPTION_KEY_BASE64: z.string().transform((value, ctx) => {
     const decoded = Buffer.from(value, "base64");

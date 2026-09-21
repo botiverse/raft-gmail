@@ -65,6 +65,48 @@ The dashboard deliberately has no send action. The public Agent manifest is avai
 
 For a production-style local run, use `npm run build && npm start`; the service then serves the compiled dashboard and API together at <http://localhost:4184>. Set `APP_ORIGIN` and all registered OAuth callbacks to that deployed origin.
 
+## Deploy on Cloudflare
+
+The Cloudflare deployment uses one Worker for the Express API and static dashboard, plus one D1 database. No separate PostgreSQL service is required for this runtime.
+
+1. Create the D1 database and replace the placeholder `database_id` in `wrangler.jsonc`:
+
+   ```bash
+   npx wrangler d1 create raft-gmail
+   ```
+
+2. Apply the D1 schema:
+
+   ```bash
+   npx wrangler d1 execute raft-gmail --remote --file=./migrations/0001_d1.sql
+   ```
+
+3. Store the six sensitive values as Worker secrets (never put their values in `wrangler.jsonc`):
+
+   ```text
+   SESSION_SECRET
+   TOKEN_ENCRYPTION_KEY_BASE64
+   RAFT_CLIENT_ID
+   RAFT_CLIENT_SECRET
+   GOOGLE_CLIENT_ID
+   GOOGLE_CLIENT_SECRET
+   ```
+
+4. Set `APP_ORIGIN` in `wrangler.jsonc` to the exact deployed HTTPS origin. Register these callbacks against that same origin:
+
+   - Raft human callback: `/auth/raft/callback`
+   - Raft Agent callback: `/auth/raft/agent/callback`
+   - Google callback: `/auth/google/callback`
+
+5. Verify the build without publishing, then deploy:
+
+   ```bash
+   npm run build:cloudflare
+   npm run deploy:cloudflare
+   ```
+
+After deployment, verify `/healthz`, both `/.well-known/` manifests, the owner login/connect flow, access approval and revocation, read access, and draft create/update. The manifest must still expose exactly the five actions listed above and no send action.
+
 ## Owner API
 
 Human browser sessions can use:
