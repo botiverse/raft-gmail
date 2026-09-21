@@ -33,7 +33,7 @@ Requirements:
 
 - Node.js 22 or newer;
 - PostgreSQL 15 or newer;
-- a Raft OAuth app with the human and Agent callback URLs;
+- a Raft OAuth app with the shared human/Agent callback URL;
 - a Google OAuth client with Gmail API enabled.
 
 ```bash
@@ -44,10 +44,11 @@ npm run migrate
 npm run dev
 ```
 
-`npm run dev` starts the owner dashboard at <http://localhost:5173> and proxies its API and OAuth routes to the service on port 4184. Register these Raft callback URLs for that local origin:
+`npm run dev` starts the owner dashboard at <http://localhost:5173> and proxies its API and OAuth routes to the service on port 4184. Register this Raft callback URL for that local origin:
 
 - `http://localhost:5173/auth/raft/callback`
-- `http://localhost:5173/auth/raft/agent/callback`
+
+Human and Agent Login with Raft intentionally share this one callback. The service uses the exchanged principal type to establish either a human browser session or a service-local Agent session.
 
 Register this Google callback URL:
 
@@ -64,6 +65,47 @@ Open <http://localhost:5173> and use the owner dashboard to:
 The dashboard deliberately has no send action. The public Agent manifest is available at `/.well-known/raft-app-manifest.json` and `/.well-known/raft-agent-manifest.json` through either the Vite proxy or the service.
 
 For a production-style local run, use `npm run build && npm start`; the service then serves the compiled dashboard and API together at <http://localhost:4184>. Set `APP_ORIGIN` and all registered OAuth callbacks to that deployed origin.
+
+## Deploy on Cloudflare
+
+The Cloudflare deployment uses one Worker for the Express API and static dashboard, plus one D1 database. No separate PostgreSQL service is required for this runtime.
+
+1. Create the D1 database and replace the placeholder `database_id` in `wrangler.jsonc`:
+
+   ```bash
+   npx wrangler d1 create raft-gmail
+   ```
+
+2. Apply the D1 schema:
+
+   ```bash
+   npx wrangler d1 execute raft-gmail --remote --file=./migrations/0001_d1.sql
+   ```
+
+3. Store the six sensitive values as Worker secrets (never put their values in `wrangler.jsonc`):
+
+   ```text
+   SESSION_SECRET
+   TOKEN_ENCRYPTION_KEY_BASE64
+   RAFT_CLIENT_ID
+   RAFT_CLIENT_SECRET
+   GOOGLE_CLIENT_ID
+   GOOGLE_CLIENT_SECRET
+   ```
+
+4. Set `APP_ORIGIN` in `wrangler.jsonc` to the exact deployed HTTPS origin. Register these callbacks against that same origin:
+
+   - Raft human + Agent callback: `/auth/raft/callback`
+   - Google callback: `/auth/google/callback`
+
+5. Verify the build without publishing, then deploy:
+
+   ```bash
+   npm run build:cloudflare
+   npm run deploy:cloudflare
+   ```
+
+After deployment, verify `/healthz`, both `/.well-known/` manifests, the owner login/connect flow, access approval and revocation, read access, and draft create/update. The manifest must still expose exactly the five actions listed above and no send action.
 
 ## Owner API
 
@@ -92,7 +134,7 @@ The `PUT` route edits an existing approved grant; it cannot create a grant for a
 
 ## Agent actions
 
-An Agent completes Login with Raft through `/auth/raft/agent/callback`, then uses the returned service-local bearer token. Action responses are structured JSON returned directly to the caller.
+An Agent completes Login with Raft through `/auth/raft/callback`, then uses the returned service-local bearer token. Action responses are structured JSON returned directly to the caller. Human and Agent logins share one callback because a registered Raft OAuth app has one exact return URL; the service branches only after Raft returns the authenticated principal type.
 
 `gmail-access-request` accepts the signed `ownerRef` copied from the owner's prompt, the requested scopes, and a reason. The service takes the Agent ID and display name from the authenticated Agent session. The request creates no grant until the human approves it for selected accounts.
 

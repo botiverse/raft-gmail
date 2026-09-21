@@ -96,7 +96,7 @@ async function csrfToken(agent: TestAgent) {
 }
 
 async function loginAgent(app: ReturnType<typeof createApp>, code: string) {
-  const result = await request(app).get(`/auth/raft/agent/callback?code=${code}`).expect(200);
+  const result = await request(app).get(`/auth/raft/callback?code=${code}`).expect(200);
   return result.body.agentSessionToken as string;
 }
 
@@ -347,6 +347,14 @@ describe("Raft Gmail capability boundary", () => {
       .send(payload)
       .expect(200);
     assert.equal(replayed.body.result.replayed, true);
+    assert.equal(gmail.createCalls, 1);
+
+    const reused = await request(app)
+      .post("/actions/gmail-draft-create")
+      .set("authorization", `Bearer ${token}`)
+      .send({ ...payload, subject: "A different draft" })
+      .expect(409);
+    assert.equal(reused.body.error.code, "OPERATION_ID_REUSED");
     assert.equal(gmail.createCalls, 1);
 
     const updated = await request(app)

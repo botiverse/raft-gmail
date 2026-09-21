@@ -8,6 +8,9 @@ import { createGoogleIdentityProvider, createRaftIdentityProvider } from "./iden
 import { PostgresRepository } from "./postgres-repository.js";
 
 const config = loadConfig();
+if (!config.DATABASE_URL) {
+  throw new Error("DATABASE_URL is required for the Node/PostgreSQL runtime.");
+}
 const pool = new Pool({ connectionString: config.DATABASE_URL });
 const app = createApp({
   config,

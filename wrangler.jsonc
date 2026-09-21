@@ -1,0 +1,40 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "raft-gmail",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-09-21",
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "enabled": true,
+      "invocation_logs": true,
+      "persist": true
+    }
+  },
+  "vars": {
+    "APP_ORIGIN": "https://raft-gmail.botiverse.workers.dev",
+    "RAFT_APP_ORIGIN": "https://app.raft.build",
+    "RAFT_API_ORIGIN": "https://api.raft.build",
+    "RAFT_SETUP_PATH": "/login-with-raft/setup",
+    "AGENT_SESSION_TTL_SECONDS": "900"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "raft-gmail",
+      "database_id": "00000000-0000-0000-0000-000000000000"
+    }
+  ],
+  "assets": {
+    "directory": "./dist/client",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": [
+      "/api/*",
+      "/actions/*",
+      "/auth/*",
+      "/.well-known/*",
+      "/healthz"
+    ]
+  }
+}
