@@ -4,6 +4,7 @@ import type {
   AgentGrant,
   AgentSession,
   AuditEvent,
+  AuthorizedAgentAccount,
   DraftOperation,
   GmailAccount,
   GmailGateway,
@@ -27,7 +28,7 @@ export class MemoryRepository implements Repository {
     const account: GmailAccount = {
       id: existing?.id ?? crypto.randomUUID(),
       ...input,
-      createdAt: existing?.createdAt ?? new Date().toISOString()
+      createdAt: existing?.createdAt ?? this.now().toISOString()
     };
     this.accounts.set(account.id, account);
     return account;
@@ -54,7 +55,7 @@ export class MemoryRepository implements Repository {
     if (!account || account.ownerId !== ownerId || account.serverId !== grant.serverId) {
       throw new Error("GMAIL_ACCOUNT_NOT_FOUND");
     }
-    const result: AgentGrant = { ...grant, updatedAt: new Date().toISOString() };
+    const result: AgentGrant = { ...grant, updatedAt: this.now().toISOString() };
     this.grants.set(`${grant.accountId}:${grant.agentId}`, result);
     return result;
   }
@@ -99,6 +100,23 @@ export class MemoryRepository implements Repository {
     const account = this.accounts.get(accountId);
     if (!account || account.ownerId !== ownerId || account.serverId !== serverId) throw new Error("GMAIL_ACCOUNT_NOT_FOUND");
     return [...this.grants.values()].filter((item) => item.accountId === accountId);
+  }
+
+  async listAuthorizedAgentAccounts(agentId: string, serverId: string): Promise<AuthorizedAgentAccount[]> {
+    return [...this.grants.values()]
+      .filter((grant) => grant.agentId === agentId && grant.serverId === serverId && grant.enabled)
+      .flatMap((grant) => {
+        const account = this.accounts.get(grant.accountId);
+        if (!account || account.serverId !== serverId) return [];
+        return [{
+          accountId: account.id,
+          scopes: grant.scopes,
+          status: "active" as const,
+          connectedAt: account.createdAt,
+          grantUpdatedAt: grant.updatedAt
+        }];
+      })
+      .sort((left, right) => left.accountId.localeCompare(right.accountId));
   }
 
   async createAccessRequest(

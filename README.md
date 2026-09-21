@@ -2,8 +2,9 @@
 
 Raft Gmail is a self-hosted capability service that lets a Raft human connect Gmail accounts and grant specific Raft Agents access to specific accounts.
 
-Version 0.1 intentionally exposes only five Agent actions:
+Version 0.1 intentionally exposes only six Agent actions:
 
+- list Gmail accounts and scopes currently authorized for the calling Agent;
 - request human approval for Gmail access;
 - search mail;
 - read a message;
@@ -105,7 +106,7 @@ The Cloudflare deployment uses one Worker for the Express API and static dashboa
    npm run deploy:cloudflare
    ```
 
-After deployment, verify `/healthz`, both `/.well-known/` manifests, the owner login/connect flow, access approval and revocation, read access, and draft create/update. The manifest must still expose exactly the five actions listed above and no send action.
+After deployment, verify `/healthz`, both `/.well-known/` manifests, the owner login/connect flow, authorized-account discovery, access approval and revocation, read access, and draft create/update. The manifest must still expose exactly the six actions listed above and no send action.
 
 ## Owner API
 
@@ -135,6 +136,10 @@ The `PUT` route edits an existing approved grant; it cannot create a grant for a
 ## Agent actions
 
 An Agent completes Login with Raft through `/auth/raft/callback`. The callback creates a service-local session, sets the signed cookie consumed by `raft integration login`, and also returns the service-local bearer token for direct API clients; the raw Raft token is never exposed. Action responses are structured JSON returned directly to the caller. Human and Agent logins share one callback because a registered Raft OAuth app has one exact return URL; the service branches only after Raft returns the authenticated principal type.
+
+Agent sessions last one hour by default and expire exactly at their returned `expiresAt` timestamp. Expiry does not change the underlying Gmail grant; the Agent can complete Login with Raft again and continue with the same currently enabled scopes.
+
+`gmail-accounts-list` returns only accounts with a currently enabled grant for the authenticated Agent on the same Raft Server. Each row contains the account UUID, granted scopes, active status, connection time, and grant update time; it never returns the owner's email or encrypted Google token. Revoked or disabled grants disappear immediately.
 
 `gmail-access-request` accepts the signed `ownerRef` copied from the owner's prompt, the requested scopes, and a reason. The service takes the Agent ID and display name from the authenticated Agent session. The request creates no grant until the human approves it for selected accounts.
 

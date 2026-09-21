@@ -104,6 +104,88 @@ describe("D1Repository", () => {
     assert.deepEqual((await repository.getGrant(account.id, "agent-1", "server-1"))?.scopes, ["gmail.read"]);
   });
 
+  test("lists only active grants for the authenticated Agent and same Raft Server", async () => {
+    const active = await repository.upsertGmailAccount({
+      ownerId: "owner-1",
+      serverId: "server-1",
+      email: "active@example.com",
+      encryptedRefreshToken: "active-secret"
+    });
+    const disabled = await repository.upsertGmailAccount({
+      ownerId: "owner-1",
+      serverId: "server-1",
+      email: "disabled@example.com",
+      encryptedRefreshToken: "disabled-secret"
+    });
+    const otherAgent = await repository.upsertGmailAccount({
+      ownerId: "owner-1",
+      serverId: "server-1",
+      email: "other-agent@example.com",
+      encryptedRefreshToken: "other-agent-secret"
+    });
+    const otherServer = await repository.upsertGmailAccount({
+      ownerId: "owner-2",
+      serverId: "server-2",
+      email: "other-server@example.com",
+      encryptedRefreshToken: "other-server-secret"
+    });
+    await repository.putGrant({
+      accountId: active.id,
+      agentId: "agent-1",
+      agentName: "Dian",
+      serverId: "server-1",
+      scopes: ["gmail.read", "gmail.draft"],
+      enabled: true
+    }, "owner-1");
+    await repository.putGrant({
+      accountId: disabled.id,
+      agentId: "agent-1",
+      agentName: "Dian",
+      serverId: "server-1",
+      scopes: ["gmail.read"],
+      enabled: false
+    }, "owner-1");
+    await repository.putGrant({
+      accountId: otherAgent.id,
+      agentId: "agent-2",
+      agentName: "Other",
+      serverId: "server-1",
+      scopes: ["gmail.read"],
+      enabled: true
+    }, "owner-1");
+    await repository.putGrant({
+      accountId: otherServer.id,
+      agentId: "agent-1",
+      agentName: "Dian",
+      serverId: "server-2",
+      scopes: ["gmail.read"],
+      enabled: true
+    }, "owner-2");
+
+    const listed = await repository.listAuthorizedAgentAccounts("agent-1", "server-1");
+    assert.equal(listed.length, 1);
+    assert.deepEqual(listed[0], {
+      accountId: active.id,
+      scopes: ["gmail.read", "gmail.draft"],
+      status: "active",
+      connectedAt: active.createdAt,
+      grantUpdatedAt: (await repository.getGrant(active.id, "agent-1", "server-1"))?.updatedAt
+    });
+
+    assert.equal(await repository.updateGrant({
+      accountId: active.id,
+      agentId: "agent-1",
+      ownerId: "owner-1",
+      serverId: "server-1",
+      scopes: ["gmail.read"],
+      enabled: false
+    }) !== null, true);
+    assert.deepEqual(await repository.listAuthorizedAgentAccounts("agent-1", "server-1"), []);
+
+    assert.equal(await repository.deleteGrant(active.id, "agent-1", "owner-1", "server-1"), true);
+    assert.deepEqual(await repository.listAuthorizedAgentAccounts("agent-1", "server-1"), []);
+  });
+
   test("allows exactly one concurrent access-request decision", async () => {
     const account = await repository.upsertGmailAccount({
       ownerId: "owner-1",

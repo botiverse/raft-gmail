@@ -10,7 +10,14 @@ assert.deepEqual(manifest.auth, {
   type: "login_with_raft",
   login_url: "https://example.test/auth/raft/login"
 });
-assert.deepEqual(actionNames, ["gmail-access-request", "gmail-search", "gmail-read", "gmail-draft-create", "gmail-draft-update"]);
+assert.deepEqual(actionNames, [
+  "gmail-accounts-list",
+  "gmail-access-request",
+  "gmail-search",
+  "gmail-read",
+  "gmail-draft-create",
+  "gmail-draft-update"
+]);
 assert.equal(actionNames.some((name) => /send|schedule|delete|archive|mark.?read/i.test(name)), false);
 assert.equal(JSON.stringify(manifest).includes("gmail.send"), true);
 for (const action of manifest.actions) {

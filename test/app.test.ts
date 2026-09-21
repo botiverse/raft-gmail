@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import request from "supertest";
 import { createApp } from "../src/app.js";
-import type { Config } from "../src/config.js";
+import { loadConfig, type Config } from "../src/config.js";
 import { createTokenVault } from "../src/crypto.js";
 import type { RaftPrincipal } from "../src/types.js";
 import { FakeGmail, MemoryRepository } from "./helpers.js";
@@ -13,7 +13,7 @@ const config: Config = {
   DATABASE_URL: "postgres://unused",
   SESSION_SECRET: "test-session-secret-at-least-thirty-two-characters",
   TOKEN_ENCRYPTION_KEY_BASE64: Buffer.alloc(32, 7).toString("base64"),
-  AGENT_SESSION_TTL_SECONDS: 900,
+  AGENT_SESSION_TTL_SECONDS: 3600,
   RAFT_APP_ORIGIN: "https://app.raft.build",
   RAFT_API_ORIGIN: "https://api.raft.build",
   RAFT_SETUP_PATH: "/login-with-raft/setup",
@@ -23,8 +23,10 @@ const config: Config = {
   GOOGLE_CLIENT_SECRET: "google-secret"
 };
 
-function fixture(repository?: MemoryRepository) {
-  const now = () => new Date("2026-09-18T00:00:00.000Z");
+function fixture(
+  repository?: MemoryRepository,
+  now: () => Date = () => new Date("2026-09-18T00:00:00.000Z")
+) {
   repository ??= new MemoryRepository(now);
   const gmail = new FakeGmail();
   let tokenCounter = 0;
@@ -139,6 +141,7 @@ describe("Raft Gmail capability boundary", () => {
         login_url: `${config.APP_ORIGIN}/auth/raft/login`
       });
       assert.deepEqual(manifest.actions.map((action) => action.name), [
+        "gmail-accounts-list",
         "gmail-access-request",
         "gmail-search",
         "gmail-read",
@@ -174,6 +177,39 @@ describe("Raft Gmail capability boundary", () => {
     assert.equal(repository.sessions.size, 0);
     const revoked = await agent.post("/actions/gmail-search").send({}).expect(401);
     assert.equal(revoked.body.error.code, "AGENT_SESSION_REQUIRED");
+  });
+
+  it("defaults Agent sessions to one hour and rejects them at the exact expiry boundary", async () => {
+    assert.equal(loadConfig({
+      SESSION_SECRET: config.SESSION_SECRET,
+      TOKEN_ENCRYPTION_KEY_BASE64: config.TOKEN_ENCRYPTION_KEY_BASE64,
+      RAFT_CLIENT_ID: config.RAFT_CLIENT_ID,
+      RAFT_CLIENT_SECRET: config.RAFT_CLIENT_SECRET,
+      GOOGLE_CLIENT_ID: config.GOOGLE_CLIENT_ID,
+      GOOGLE_CLIENT_SECRET: config.GOOGLE_CLIENT_SECRET
+    }).AGENT_SESSION_TTL_SECONDS, 3600);
+
+    let timestamp = Date.parse("2026-09-18T00:00:00.000Z");
+    const now = () => new Date(timestamp);
+    const repository = new MemoryRepository(now);
+    const { app } = fixture(repository, now);
+    const callback = await request(app).get("/auth/raft/callback?code=agentA").expect(200);
+    assert.equal(callback.body.expiresAt, "2026-09-18T01:00:00.000Z");
+
+    timestamp += 3_600_000 - 1;
+    await request(app)
+      .post("/actions/gmail-accounts-list")
+      .set("authorization", `Bearer ${callback.body.agentSessionToken}`)
+      .send({})
+      .expect(200);
+
+    timestamp += 1;
+    const expired = await request(app)
+      .post("/actions/gmail-accounts-list")
+      .set("authorization", `Bearer ${callback.body.agentSessionToken}`)
+      .send({})
+      .expect(401);
+    assert.equal(expired.body.error.code, "AGENT_SESSION_INVALID");
   });
 
   it("does not create a second Agent session when the one-time Raft code is replayed", async () => {
@@ -326,6 +362,94 @@ describe("Raft Gmail capability boundary", () => {
       .send({ accountId: second.id, query: "is:inbox" })
       .expect(403);
     assert.equal(gmail.searchCalls, 1);
+  });
+
+  it("lets an Agent discover only its active same-server account grants without identity or token fields", async () => {
+    const { app, repository, gmail } = fixture();
+    const vault = createTokenVault(config.TOKEN_ENCRYPTION_KEY_BASE64);
+    const active = await repository.upsertGmailAccount({
+      ownerId: "human-1",
+      serverId: "server-1",
+      email: "owner@example.com",
+      encryptedRefreshToken: vault.encrypt("active-secret")
+    });
+    const disabled = await repository.upsertGmailAccount({
+      ownerId: "human-1",
+      serverId: "server-1",
+      email: "disabled@example.com",
+      encryptedRefreshToken: vault.encrypt("disabled-secret")
+    });
+    const otherAgent = await repository.upsertGmailAccount({
+      ownerId: "human-1",
+      serverId: "server-1",
+      email: "other-agent@example.com",
+      encryptedRefreshToken: vault.encrypt("other-agent-secret")
+    });
+    const otherServer = await repository.upsertGmailAccount({
+      ownerId: "human-2",
+      serverId: "server-2",
+      email: "other-server@example.com",
+      encryptedRefreshToken: vault.encrypt("other-server-secret")
+    });
+    await repository.putGrant({
+      accountId: active.id,
+      agentId: "agent-a",
+      agentName: "Agent A",
+      serverId: "server-1",
+      scopes: ["gmail.read", "gmail.draft"],
+      enabled: true
+    }, "human-1");
+    await repository.putGrant({
+      accountId: disabled.id,
+      agentId: "agent-a",
+      agentName: "Agent A",
+      serverId: "server-1",
+      scopes: ["gmail.read"],
+      enabled: false
+    }, "human-1");
+    await repository.putGrant({
+      accountId: otherAgent.id,
+      agentId: "agent-b",
+      agentName: "Agent B",
+      serverId: "server-1",
+      scopes: ["gmail.read"],
+      enabled: true
+    }, "human-1");
+    await repository.putGrant({
+      accountId: otherServer.id,
+      agentId: "agent-a",
+      agentName: "Agent A",
+      serverId: "server-2",
+      scopes: ["gmail.read"],
+      enabled: true
+    }, "human-2");
+
+    await request(app).post("/actions/gmail-accounts-list").send({}).expect(401);
+    const token = await loginAgent(app, "agentA");
+    const listed = await request(app)
+      .post("/actions/gmail-accounts-list")
+      .set("authorization", `Bearer ${token}`)
+      .send({})
+      .expect(200);
+    assert.deepEqual(listed.body.result, [{
+      accountId: active.id,
+      scopes: ["gmail.read", "gmail.draft"],
+      status: "active",
+      connectedAt: "2026-09-18T00:00:00.000Z",
+      grantUpdatedAt: "2026-09-18T00:00:00.000Z"
+    }]);
+    for (const forbidden of ["email", "ownerId", "serverId", "encryptedRefreshToken"]) {
+      assert.equal(forbidden in listed.body.result[0], false);
+    }
+    assert.equal(gmail.searchCalls + gmail.readCalls + gmail.createCalls + gmail.updateCalls, 0);
+
+    assert.equal(await repository.deleteGrant(active.id, "agent-a", "human-1", "server-1"), true);
+    const afterRevoke = await request(app)
+      .post("/actions/gmail-accounts-list")
+      .set("authorization", `Bearer ${token}`)
+      .send({})
+      .expect(200);
+    assert.deepEqual(afterRevoke.body.result, []);
   });
 
   it("enforces read and draft scopes independently and revokes access immediately", async () => {
@@ -486,7 +610,14 @@ describe("Raft Gmail capability boundary", () => {
     const { app } = fixture();
     const manifest = await request(app).get("/.well-known/raft-app-manifest.json").expect(200);
     const names = manifest.body.actions.map((action: { name: string }) => action.name);
-    assert.deepEqual(names, ["gmail-access-request", "gmail-search", "gmail-read", "gmail-draft-create", "gmail-draft-update"]);
+    assert.deepEqual(names, [
+      "gmail-accounts-list",
+      "gmail-access-request",
+      "gmail-search",
+      "gmail-read",
+      "gmail-draft-create",
+      "gmail-draft-update"
+    ]);
     assert.equal(names.some((name: string) => name.includes("send")), false);
     await request(app).post("/actions/gmail-send").send({}).expect(404);
   });

@@ -289,6 +289,20 @@ export function createApp(dependencies: AppDependencies) {
     res.json({ ok: true, result: grant });
   }));
 
+  app.post("/actions/gmail-accounts-list", requireAgentSession(repository), asyncRoute(async (req, res) => {
+    const session = req.agentSession!;
+    const result = await repository.listAuthorizedAgentAccounts(session.agentId, session.serverId);
+    await repository.appendAudit({
+      actorType: "agent",
+      actorId: session.agentId,
+      serverId: session.serverId,
+      action: "gmail.accounts.list",
+      outcome: "succeeded",
+      metadata: { accountCount: result.length }
+    });
+    res.json({ ok: true, result });
+  }));
+
   app.post("/actions/gmail-access-request", requireAgentSession(repository), asyncRoute(async (req, res) => {
     const body = accessRequestSchema.parse(req.body);
     const owner = verifyOwnerRef(body.ownerRef, config.SESSION_SECRET, now());

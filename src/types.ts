@@ -29,6 +29,14 @@ export interface AgentGrant {
   updatedAt: string;
 }
 
+export interface AuthorizedAgentAccount {
+  accountId: string;
+  scopes: GrantScope[];
+  status: "active";
+  connectedAt: string;
+  grantUpdatedAt: string;
+}
+
 export type AccessRequestStatus = "pending" | "approved" | "denied";
 
 export interface AgentAccessRequest {
@@ -92,6 +100,7 @@ export interface Repository {
   deleteGrant(accountId: string, agentId: string, ownerId: string, serverId: string): Promise<boolean>;
   getGrant(accountId: string, agentId: string, serverId: string): Promise<AgentGrant | null>;
   listGrants(accountId: string, ownerId: string, serverId: string): Promise<AgentGrant[]>;
+  listAuthorizedAgentAccounts(agentId: string, serverId: string): Promise<AuthorizedAgentAccount[]>;
   createAccessRequest(
     request: Omit<AgentAccessRequest, "id" | "status" | "createdAt" | "updatedAt" | "decidedAt">
   ): Promise<AgentAccessRequest>;
