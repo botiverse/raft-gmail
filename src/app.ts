@@ -84,8 +84,8 @@ export function createApp(dependencies: AppDependencies) {
   );
 
   app.get("/healthz", (_req, res) => res.json({ ok: true }));
-  app.get("/.well-known/raft-app-manifest.json", (_req, res) => res.json(buildManifest(config.APP_ORIGIN)));
-  app.get("/.well-known/raft-agent-manifest.json", (_req, res) => res.json(buildManifest(config.APP_ORIGIN)));
+  app.get("/.well-known/raft-app-manifest.json", (_req, res) => res.json(buildManifest(config.APP_ORIGIN, config.RAFT_CLIENT_ID)));
+  app.get("/.well-known/raft-agent-manifest.json", (_req, res) => res.json(buildManifest(config.APP_ORIGIN, config.RAFT_CLIENT_ID)));
 
   app.get("/auth/raft/login", (req, res) => {
     const state = randomToken();
@@ -113,6 +113,8 @@ export function createApp(dependencies: AppDependencies) {
       serverId: principal.serverId,
       expiresAt
     });
+    req.session = { agentSessionToken: token };
+    res.set("cache-control", "no-store");
     res.json({
       ok: true,
       agentSessionToken: token,
@@ -124,8 +126,9 @@ export function createApp(dependencies: AppDependencies) {
   }));
 
   app.delete("/api/agent/session", requireAgentSession(repository), asyncRoute(async (req, res) => {
-    const token = bearerToken(req);
+    const token = agentSessionToken(req);
     await repository.deleteAgentSession(hashOpaqueToken(token));
+    if (agentSessionCookieToken(req) === token) req.session = null;
     res.json({ ok: true, result: { revoked: true } });
   }));
 
@@ -435,7 +438,7 @@ function requireCsrf(req: Request, res: Response, next: NextFunction) {
 
 function requireAgentSession(repository: Repository) {
   return asyncRoute(async (req, res, next) => {
-    const token = bearerToken(req);
+    const token = agentSessionToken(req);
     if (!token) return sendError(res, 401, "AGENT_SESSION_REQUIRED", "A service-local Agent session is required.");
     const session = await repository.getAgentSession(hashOpaqueToken(token));
     if (!session) return sendError(res, 401, "AGENT_SESSION_INVALID", "The Agent session is invalid or expired.");
@@ -589,6 +592,15 @@ function isOwnedAccount(account: GmailAccount | null, principal: RaftPrincipal) 
 function bearerToken(req: Request): string {
   const value = req.header("authorization") ?? "";
   return value.startsWith("Bearer ") ? value.slice("Bearer ".length) : "";
+}
+
+function agentSessionCookieToken(req: Request): string {
+  const value = req.session?.agentSessionToken;
+  return typeof value === "string" ? value : "";
+}
+
+function agentSessionToken(req: Request): string {
+  return bearerToken(req) || agentSessionCookieToken(req);
 }
 
 function requiredQuery(req: Request, name: string): string {

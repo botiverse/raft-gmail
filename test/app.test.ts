@@ -28,6 +28,7 @@ function fixture(repository?: MemoryRepository) {
   repository ??= new MemoryRepository(now);
   const gmail = new FakeGmail();
   let tokenCounter = 0;
+  const exchangedRaftCodes = new Set<string>();
   const principals: Record<string, RaftPrincipal> = {
     human: { type: "human", id: "human-1", name: "Owner", serverId: "server-1" },
     agentA: { type: "agent", id: "agent-a", name: "Agent A", serverId: "server-1" },
@@ -47,8 +48,10 @@ function fixture(repository?: MemoryRepository) {
         return url.toString();
       },
       async exchange(code) {
+        if (exchangedRaftCodes.has(code)) throw new Error("RAFT_TOKEN_EXCHANGE_FAILED:409");
         const principal = principals[code];
         if (!principal) throw new Error("unknown code");
+        exchangedRaftCodes.add(code);
         return principal;
       }
     },
@@ -112,6 +115,84 @@ async function putGrant(repository: MemoryRepository, accountId: string, agentId
 }
 
 describe("Raft Gmail capability boundary", () => {
+  it("publishes the Raft Agent manifest v0 contract on both registered paths", async () => {
+    const { app } = fixture();
+    for (const path of ["/.well-known/raft-app-manifest.json", "/.well-known/raft-agent-manifest.json"]) {
+      const response = await request(app).get(path).expect(200);
+      const manifest = response.body as {
+        schema: string;
+        service: string;
+        execution: { mode: string; base_url: string };
+        auth: { type: string; login_url: string };
+        actions: Array<{
+          name: string;
+          endpoint: { method: string; path: string };
+          parameters: Record<string, { type: string; required?: boolean }>;
+          response?: unknown;
+        }>;
+      };
+      assert.equal(manifest.schema, "raft-agent-manifest.v0");
+      assert.equal(manifest.service, config.RAFT_CLIENT_ID);
+      assert.deepEqual(manifest.execution, { mode: "http_api", base_url: config.APP_ORIGIN });
+      assert.deepEqual(manifest.auth, {
+        type: "login_with_raft",
+        login_url: `${config.APP_ORIGIN}/auth/raft/login`
+      });
+      assert.deepEqual(manifest.actions.map((action) => action.name), [
+        "gmail-access-request",
+        "gmail-search",
+        "gmail-read",
+        "gmail-draft-create",
+        "gmail-draft-update"
+      ]);
+      for (const action of manifest.actions) {
+        assert.equal(action.endpoint.method, "POST");
+        assert.match(action.endpoint.path, /^\/actions\/gmail-/);
+        assert.equal(action.response, undefined);
+      }
+      assert.equal(manifest.actions.some((action) => /send|schedule|delete|archive|mark.?read/i.test(action.name)), false);
+    }
+  });
+
+  it("establishes a cookie-backed Agent session for stateless CLI handoff and preserves revocation", async () => {
+    const { app, repository } = fixture();
+    const agent = request.agent(app);
+    const callback = await agent.get("/auth/raft/callback?code=agentA").expect(200);
+    const setCookies = callback.headers["set-cookie"] as unknown as string[] | undefined;
+    assert.ok(setCookies?.some((cookie) => cookie.startsWith("raft_gmail=")));
+    assert.equal(callback.body.tokenType, "service-local-agent-session");
+    assert.equal(callback.body.rawRaftTokenExposed, false);
+    assert.equal(repository.sessions.size, 1);
+    assert.deepEqual([...repository.sessions.values()].map(({ agentId, serverId }) => ({ agentId, serverId })), [
+      { agentId: "agent-a", serverId: "server-1" }
+    ]);
+
+    const authenticated = await agent.post("/actions/gmail-search").send({}).expect(400);
+    assert.equal(authenticated.body.error.code, "INVALID_REQUEST");
+
+    await agent.delete("/api/agent/session").expect(200);
+    assert.equal(repository.sessions.size, 0);
+    const revoked = await agent.post("/actions/gmail-search").send({}).expect(401);
+    assert.equal(revoked.body.error.code, "AGENT_SESSION_REQUIRED");
+  });
+
+  it("does not create a second Agent session when the one-time Raft code is replayed", async () => {
+    const { app, repository } = fixture();
+    await request(app).get("/auth/raft/callback?code=agentA").expect(200);
+    const replay = await request(app).get("/auth/raft/callback?code=agentA").expect(500);
+    assert.equal(replay.body.error.code, "RAFT_TOKEN_EXCHANGE_FAILED");
+    assert.equal(repository.sessions.size, 1);
+  });
+
+  it("keeps human OAuth state validation ahead of browser session creation", async () => {
+    const { app } = fixture();
+    const human = request.agent(app);
+    await human.get("/auth/raft/login").expect(302);
+    const rejected = await human.get("/auth/raft/callback?code=human&state=wrong-state").expect(400);
+    assert.equal(rejected.body.error.code, "INVALID_OAUTH_STATE");
+    await human.get("/api/session").expect(401);
+  });
+
   it("connects a human-owned Gmail account without exposing its refresh token", async () => {
     const { app, repository } = fixture();
     const human = request.agent(app);
