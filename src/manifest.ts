@@ -109,7 +109,12 @@ function draftParameters(): Record<string, ActionParameter> {
     to: { type: "string[]", description: "Draft recipient addresses.", required: true },
     cc: { type: "string[]", description: "Optional CC recipient addresses." },
     subject: { type: "string", description: "Draft subject.", required: true },
-    bodyText: { type: "string", description: "Plain-text draft body.", required: true },
+    bodyText: {
+      type: "string",
+      description: "Plain-text draft body, also used as the text alternative when bodyHtml is present.",
+      required: true
+    },
+    bodyHtml: { type: "string", description: "Optional HTML draft body. Creates a multipart/alternative draft." },
     threadId: { type: "string", description: "Optional Gmail thread ID." }
   };
 }

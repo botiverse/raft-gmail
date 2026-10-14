@@ -60,6 +60,7 @@ const draftInputSchema = z.object({
   cc: z.array(addressSchema).max(50).optional(),
   subject: z.string().max(998).refine(noHeaderBreaks, "subject must not contain a line break"),
   bodyText: z.string().max(2_000_000),
+  bodyHtml: z.string().max(2_000_000).optional(),
   threadId: z.string().min(1).max(256).optional()
 });
 
@@ -506,6 +507,7 @@ async function performDraftOperation(input: {
     cc?: string[] | undefined;
     subject: string;
     bodyText: string;
+    bodyHtml?: string | undefined;
     threadId?: string | undefined;
   };
   invoke: (refreshToken: string, input: DraftInput) => Promise<{ id: string; messageId?: string }>;
@@ -541,6 +543,7 @@ async function performDraftOperation(input: {
     ...(input.request.cc ? { cc: input.request.cc } : {}),
     subject: input.request.subject,
     bodyText: input.request.bodyText,
+    ...(input.request.bodyHtml !== undefined ? { bodyHtml: input.request.bodyHtml } : {}),
     ...(input.request.threadId ? { threadId: input.request.threadId } : {})
   };
   try {

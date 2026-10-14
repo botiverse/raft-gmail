@@ -145,6 +145,7 @@ export interface DraftInput {
   cc?: string[];
   subject: string;
   bodyText: string;
+  bodyHtml?: string;
   threadId?: string;
 }
 

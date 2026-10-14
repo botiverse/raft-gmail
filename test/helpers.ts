@@ -5,6 +5,7 @@ import type {
   AgentSession,
   AuditEvent,
   AuthorizedAgentAccount,
+  DraftInput,
   DraftOperation,
   GmailAccount,
   GmailGateway,
@@ -233,6 +234,8 @@ export class FakeGmail implements GmailGateway {
   createCalls = 0;
   updateCalls = 0;
   failNextCreate = false;
+  lastCreateInput: DraftInput | undefined;
+  lastUpdateInput: DraftInput | undefined;
 
   async search() {
     this.searchCalls += 1;
@@ -244,8 +247,9 @@ export class FakeGmail implements GmailGateway {
     return { id: "message-1", threadId: "thread-1", labelIds: ["INBOX"], payload: { headers: [] } };
   }
 
-  async createDraft() {
+  async createDraft(_refreshToken: string, input: DraftInput) {
     this.createCalls += 1;
+    this.lastCreateInput = input;
     if (this.failNextCreate) {
       this.failNextCreate = false;
       throw new Error("provider transport failed");
@@ -253,8 +257,9 @@ export class FakeGmail implements GmailGateway {
     return { id: `draft-${this.createCalls}`, messageId: `draft-message-${this.createCalls}` };
   }
 
-  async updateDraft(_refreshToken: string, draftId: string) {
+  async updateDraft(_refreshToken: string, draftId: string, input: DraftInput) {
     this.updateCalls += 1;
+    this.lastUpdateInput = input;
     return { id: draftId, messageId: `updated-${this.updateCalls}` };
   }
 }

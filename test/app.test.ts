@@ -148,6 +148,14 @@ describe("Raft Gmail capability boundary", () => {
         "gmail-draft-create",
         "gmail-draft-update"
       ]);
+      for (const name of ["gmail-draft-create", "gmail-draft-update"]) {
+        const action = manifest.actions.find((candidate) => candidate.name === name);
+        assert.ok(action);
+        assert.equal(action.parameters.bodyText?.type, "string");
+        assert.equal(action.parameters.bodyText?.required, true);
+        assert.equal(action.parameters.bodyHtml?.type, "string");
+        assert.equal(action.parameters.bodyHtml?.required, undefined);
+      }
       for (const action of manifest.actions) {
         assert.equal(action.endpoint.method, "POST");
         assert.match(action.endpoint.path, /^\/actions\/gmail-/);
@@ -537,7 +545,8 @@ describe("Raft Gmail capability boundary", () => {
       operationId: "operation-direct-draft",
       to: ["recipient@example.com"],
       subject: "Draft only",
-      bodyText: "This stays in Gmail drafts."
+      bodyText: "This stays in Gmail drafts.",
+      bodyHtml: "<p>This stays in <strong>Gmail drafts</strong>.</p>"
     };
 
     const created = await request(app)
@@ -547,6 +556,12 @@ describe("Raft Gmail capability boundary", () => {
       .expect(200);
     assert.equal(created.body.result.replayed, false);
     assert.equal(gmail.createCalls, 1);
+    assert.deepEqual(gmail.lastCreateInput, {
+      to: ["recipient@example.com"],
+      subject: "Draft only",
+      bodyText: "This stays in Gmail drafts.",
+      bodyHtml: "<p>This stays in <strong>Gmail drafts</strong>.</p>"
+    });
 
     const replayed = await request(app)
       .post("/actions/gmail-draft-create")
@@ -564,6 +579,14 @@ describe("Raft Gmail capability boundary", () => {
     assert.equal(reused.body.error.code, "OPERATION_ID_REUSED");
     assert.equal(gmail.createCalls, 1);
 
+    const reusedHtml = await request(app)
+      .post("/actions/gmail-draft-create")
+      .set("authorization", `Bearer ${token}`)
+      .send({ ...payload, bodyHtml: "<p>A different HTML draft.</p>" })
+      .expect(409);
+    assert.equal(reusedHtml.body.error.code, "OPERATION_ID_REUSED");
+    assert.equal(gmail.createCalls, 1);
+
     const updated = await request(app)
       .post("/actions/gmail-draft-update")
       .set("authorization", `Bearer ${token}`)
@@ -571,11 +594,18 @@ describe("Raft Gmail capability boundary", () => {
         ...payload,
         operationId: "operation-direct-update",
         draftId: created.body.result.id,
-        bodyText: "Updated draft body."
+        bodyText: "Updated draft body.",
+        bodyHtml: "<p>Updated <em>draft</em> body.</p>"
       })
       .expect(200);
     assert.equal(updated.body.result.id, created.body.result.id);
     assert.equal(gmail.updateCalls, 1);
+    assert.deepEqual(gmail.lastUpdateInput, {
+      to: ["recipient@example.com"],
+      subject: "Draft only",
+      bodyText: "Updated draft body.",
+      bodyHtml: "<p>Updated <em>draft</em> body.</p>"
+    });
   });
 
   it("holds an ambiguous draft outcome instead of retrying or duplicating", async () => {
