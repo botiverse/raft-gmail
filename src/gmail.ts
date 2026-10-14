@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { google } from "googleapis";
 import type { Config } from "./config.js";
 import type { DraftInput, GmailGateway, GmailMessageResult, GmailSearchResult } from "./types.js";
@@ -47,14 +48,45 @@ export function createGmailGateway(config: Config): GmailGateway {
   };
 }
 
-function encodeMessage(input: DraftInput): string {
+export function encodeMessage(input: DraftInput): string {
   const headers = [
     `To: ${input.to.join(", ")}`,
     ...(input.cc?.length ? [`Cc: ${input.cc.join(", ")}`] : []),
     `Subject: ${input.subject}`,
-    "MIME-Version: 1.0",
-    "Content-Type: text/plain; charset=UTF-8",
-    "Content-Transfer-Encoding: 8bit"
+    "MIME-Version: 1.0"
   ];
-  return Buffer.from(`${headers.join("\r\n")}\r\n\r\n${input.bodyText}`, "utf8").toString("base64url");
+
+  if (input.bodyHtml === undefined) {
+    headers.push("Content-Type: text/plain; charset=UTF-8", "Content-Transfer-Encoding: 8bit");
+    return Buffer.from(`${headers.join("\r\n")}\r\n\r\n${input.bodyText}`, "utf8").toString("base64url");
+  }
+
+  const boundaryDigest = createHash("sha256")
+    .update(input.bodyText, "utf8")
+    .update("\0", "utf8")
+    .update(input.bodyHtml, "utf8")
+    .digest("hex")
+    .slice(0, 32);
+  const boundary = `raft-gmail-${boundaryDigest}`;
+  headers.push(`Content-Type: multipart/alternative; boundary="${boundary}"`);
+  const parts = [
+    mimePart(boundary, "text/plain", input.bodyText),
+    mimePart(boundary, "text/html", input.bodyHtml),
+    `--${boundary}--`
+  ];
+  return Buffer.from(`${headers.join("\r\n")}\r\n\r\n${parts.join("\r\n")}`, "utf8").toString("base64url");
+}
+
+function mimePart(boundary: string, contentType: "text/plain" | "text/html", body: string): string {
+  return [
+    `--${boundary}`,
+    `Content-Type: ${contentType}; charset=UTF-8`,
+    "Content-Transfer-Encoding: base64",
+    "",
+    wrapBase64(Buffer.from(body, "utf8").toString("base64"))
+  ].join("\r\n");
+}
+
+function wrapBase64(value: string): string {
+  return value.match(/.{1,76}/g)?.join("\r\n") ?? "";
 }

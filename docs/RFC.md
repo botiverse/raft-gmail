@@ -32,6 +32,8 @@ Account existence is hidden across Server boundaries: an Agent from another Serv
 
 There is no send, schedule, delete, archive, or mark-read route. The Google `gmail.compose` scope still technically permits send; this narrower contract is enforced by the service implementation and must be reviewed on every change.
 
+Both draft actions require `bodyText`. An optional `bodyHtml` adds a rich-text alternative: the Gmail message is encoded as `multipart/alternative`, with the plain-text fallback first and the HTML part last. Requests without `bodyHtml` retain the original `text/plain` message shape. This is an API payload capability only; an HTML-composer UI remains out of scope.
+
 ## Access-request and approval boundary
 
 The owner dashboard does not create a grant from a manually typed Agent ID. It creates a time-limited signed owner reference and a copyable prompt. An Agent authenticates with Login with Raft and submits that reference, requested scopes, and a reason through `gmail-access-request`; the service records the principal ID and name from the authenticated Agent session.

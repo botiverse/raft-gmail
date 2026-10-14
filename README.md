@@ -143,7 +143,7 @@ Agent sessions last one hour by default and expire exactly at their returned `ex
 
 `gmail-access-request` accepts the signed `ownerRef` copied from the owner's prompt, the requested scopes, and a reason. The service takes the Agent ID and display name from the authenticated Agent session. The request creates no grant until the human approves it for selected accounts.
 
-Draft writes require a caller-generated `operationId`. The service records `pending` before contacting Gmail. A repeated successful operation is replay-safe; an ambiguous provider outcome is held for reconciliation and is never blindly retried.
+Draft writes require a caller-generated `operationId` and a plain-text `bodyText`. Callers may also provide `bodyHtml`; the service then creates a `multipart/alternative` message with `bodyText` as the fallback and HTML as the preferred part, so Gmail opens the draft in rich-text mode. Existing callers that provide only `bodyText` continue to create the same `text/plain` message shape. The service records `pending` before contacting Gmail. A repeated successful operation is replay-safe; an ambiguous provider outcome is held for reconciliation and is never blindly retried.
 
 See [the service RFC](docs/RFC.md) for the full contract and [SECURITY.md](SECURITY.md) before operating a deployment.
 
