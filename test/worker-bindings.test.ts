@@ -58,6 +58,8 @@ describe("Cloudflare Worker D1 binding", () => {
 
     assert.match(source, /createLazyD1Database\(\(\) => env\.DB as D1DatabaseLike \| undefined\)/);
     assert.doesNotMatch(source, /const database = env\.DB/);
+    assert.match(source, /scheduled\(/);
+    assert.match(source, /processDueScheduledEmails\(\{ repository, gmail, tokenVault \}\)/);
   });
 
   test("pins the production Agent session TTL to one hour", async () => {
@@ -65,5 +67,6 @@ describe("Cloudflare Worker D1 binding", () => {
 
     assert.match(source, /"AGENT_SESSION_TTL_SECONDS"\s*:\s*"3600"/);
     assert.match(source, /"database_name"\s*:\s*"raft-gmail"/);
+    assert.match(source, /"crons"\s*:\s*\["\* \* \* \* \*"\]/);
   });
 });

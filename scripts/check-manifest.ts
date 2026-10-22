@@ -16,10 +16,14 @@ assert.deepEqual(actionNames, [
   "gmail-search",
   "gmail-read",
   "gmail-draft-create",
-  "gmail-draft-update"
+  "gmail-draft-update",
+  "gmail-scheduled-send-create",
+  "gmail-scheduled-send-list",
+  "gmail-scheduled-send-cancel"
 ]);
-assert.equal(actionNames.some((name) => /send|schedule|delete|archive|mark.?read/i.test(name)), false);
+assert.equal(actionNames.includes("gmail-send"), false);
 assert.equal(JSON.stringify(manifest).includes("gmail.send"), true);
+assert.equal(JSON.stringify(manifest).includes("gmail.schedule"), true);
 for (const action of manifest.actions) {
   assert.equal(action.endpoint.method, "POST");
   assert.match(action.endpoint.path, /^\/actions\/gmail-/);

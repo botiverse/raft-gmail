@@ -68,6 +68,7 @@ describe("D1Repository", () => {
   beforeEach(() => {
     database = new DatabaseSync(":memory:");
     database.exec(readFileSync(new URL("../migrations/d1/0001_initial.sql", import.meta.url), "utf8"));
+    database.exec(readFileSync(new URL("../migrations/d1/0002_scheduled_emails.sql", import.meta.url), "utf8"));
     repository = new D1Repository(new SqliteD1Database(database));
   });
 
@@ -85,10 +86,10 @@ describe("D1Repository", () => {
       agentId: "agent-1",
       agentName: "Dian",
       serverId: "server-1",
-      scopes: ["gmail.read"],
+      scopes: ["gmail.read", "gmail.schedule"],
       enabled: true
     }, "owner-1");
-    assert.deepEqual(grant.scopes, ["gmail.read"]);
+    assert.deepEqual(grant.scopes, ["gmail.read", "gmail.schedule"]);
     await assert.rejects(
       repository.putGrant({ ...grant, scopes: ["gmail.read", "gmail.draft"] }, "other-owner"),
       /GMAIL_ACCOUNT_NOT_FOUND/
@@ -101,7 +102,7 @@ describe("D1Repository", () => {
       scopes: ["gmail.draft"],
       enabled: true
     }), null);
-    assert.deepEqual((await repository.getGrant(account.id, "agent-1", "server-1"))?.scopes, ["gmail.read"]);
+    assert.deepEqual((await repository.getGrant(account.id, "agent-1", "server-1"))?.scopes, ["gmail.read", "gmail.schedule"]);
   });
 
   test("lists only active grants for the authenticated Agent and same Raft Server", async () => {
@@ -353,5 +354,46 @@ describe("D1Repository", () => {
       repository.completeDraftOperation(account.id, "agent-1", "operation-1", "draft-2"),
       /DRAFT_OPERATION_NOT_PENDING/
     );
+  });
+
+  test("prepares, atomically claims, and completes scheduled emails", async () => {
+    const account = await repository.upsertGmailAccount({
+      ownerId: "owner-1",
+      serverId: "server-1",
+      email: "owner@example.com",
+      encryptedRefreshToken: "encrypted"
+    });
+    const email = {
+      id: "2166747a-1523-4b19-93e5-8576a773b893",
+      accountId: account.id,
+      agentId: "agent-1",
+      serverId: "server-1",
+      operationId: "schedule-operation-1",
+      requestHash: "hash-1",
+      scheduledFor: "2026-10-22T03:01:00.000Z",
+      status: "preparing" as const,
+      createdAt: "2026-10-22T03:00:00.000Z",
+      updatedAt: "2026-10-22T03:00:00.000Z"
+    };
+    assert.equal((await repository.beginScheduledEmail(email)).created, true);
+    assert.equal((await repository.beginScheduledEmail({ ...email, requestHash: "different" })).created, false);
+    const prepared = await repository.completeScheduledEmailPreparation(
+      email.id,
+      account.id,
+      "agent-1",
+      "draft-1"
+    );
+    assert.equal(prepared.status, "scheduled");
+    assert.equal(prepared.providerDraftId, "draft-1");
+    assert.equal((await repository.claimDueScheduledEmails("2026-10-22T03:00:59.999Z", 25)).length, 0);
+    const firstClaim = await repository.claimDueScheduledEmails("2026-10-22T03:01:00.000Z", 25);
+    const secondClaim = await repository.claimDueScheduledEmails("2026-10-22T03:01:00.000Z", 25);
+    assert.equal(firstClaim.length, 1);
+    assert.equal(firstClaim[0]?.status, "sending");
+    assert.equal(secondClaim.length, 0);
+    const sent = await repository.completeScheduledEmailSent(email.id, "message-1");
+    assert.equal(sent.status, "sent");
+    assert.equal(sent.providerMessageId, "message-1");
+    assert.equal((await repository.listScheduledEmails(account.id, "agent-1", "server-1")).length, 1);
   });
 });

@@ -7,7 +7,8 @@ import type {
   AuthorizedAgentAccount,
   DraftOperation,
   GmailAccount,
-  Repository
+  Repository,
+  ScheduledEmail
 } from "./types.js";
 
 function accountFromRow(row: QueryResultRow): GmailAccount {
@@ -366,6 +367,140 @@ export class PostgresRepository implements Repository {
     return draftOperationFromRow(result.rows[0]);
   }
 
+  async beginScheduledEmail(email: ScheduledEmail): Promise<{ created: boolean; email: ScheduledEmail }> {
+    const result = await this.pool.query(
+      `INSERT INTO scheduled_emails
+         (id, gmail_account_id, raft_agent_id, raft_server_id, operation_id, request_hash,
+          scheduled_for, status, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'preparing', $8, $9)
+       ON CONFLICT (gmail_account_id, raft_agent_id, operation_id) DO NOTHING
+       RETURNING *`,
+      [
+        email.id, email.accountId, email.agentId, email.serverId, email.operationId,
+        email.requestHash, email.scheduledFor, email.createdAt, email.updatedAt
+      ]
+    );
+    const created = Boolean(result.rows[0]);
+    const row = result.rows[0] ?? (
+      await this.pool.query(
+        `SELECT * FROM scheduled_emails
+         WHERE gmail_account_id = $1 AND raft_agent_id = $2 AND operation_id = $3`,
+        [email.accountId, email.agentId, email.operationId]
+      )
+    ).rows[0];
+    if (!row) throw new Error("POSTGRES_WRITE_FAILED:scheduled_emails");
+    return { created, email: scheduledEmailFromRow(row) };
+  }
+
+  async completeScheduledEmailPreparation(
+    id: string,
+    accountId: string,
+    agentId: string,
+    providerDraftId: string
+  ): Promise<ScheduledEmail> {
+    const result = await this.pool.query(
+      `UPDATE scheduled_emails
+       SET status = 'scheduled', provider_draft_id = $4, updated_at = now()
+       WHERE id = $1 AND gmail_account_id = $2 AND raft_agent_id = $3 AND status = 'preparing'
+       RETURNING *`,
+      [id, accountId, agentId, providerDraftId]
+    );
+    if (!result.rows[0]) throw new Error("SCHEDULED_EMAIL_NOT_PREPARING");
+    return scheduledEmailFromRow(result.rows[0]);
+  }
+
+  async listScheduledEmails(accountId: string, agentId: string, serverId: string): Promise<ScheduledEmail[]> {
+    const result = await this.pool.query(
+      `SELECT * FROM scheduled_emails
+       WHERE gmail_account_id = $1 AND raft_agent_id = $2 AND raft_server_id = $3
+       ORDER BY scheduled_for DESC, created_at DESC`,
+      [accountId, agentId, serverId]
+    );
+    return result.rows.map(scheduledEmailFromRow);
+  }
+
+  async getScheduledEmailByOperation(
+    accountId: string,
+    agentId: string,
+    operationId: string
+  ): Promise<ScheduledEmail | null> {
+    const result = await this.pool.query(
+      `SELECT * FROM scheduled_emails
+       WHERE gmail_account_id = $1 AND raft_agent_id = $2 AND operation_id = $3`,
+      [accountId, agentId, operationId]
+    );
+    return result.rows[0] ? scheduledEmailFromRow(result.rows[0]) : null;
+  }
+
+  async cancelScheduledEmail(
+    id: string,
+    accountId: string,
+    agentId: string,
+    serverId: string
+  ): Promise<ScheduledEmail | null> {
+    const result = await this.pool.query(
+      `UPDATE scheduled_emails
+       SET status = 'canceled', failure_code = 'CANCELED_BY_AGENT', canceled_at = now(), updated_at = now()
+       WHERE id = $1 AND gmail_account_id = $2 AND raft_agent_id = $3 AND raft_server_id = $4
+         AND status = 'scheduled'
+       RETURNING *`,
+      [id, accountId, agentId, serverId]
+    );
+    return result.rows[0] ? scheduledEmailFromRow(result.rows[0]) : null;
+  }
+
+  async claimDueScheduledEmails(now: string, limit: number): Promise<ScheduledEmail[]> {
+    const result = await this.pool.query(
+      `WITH due AS (
+         SELECT id FROM scheduled_emails
+         WHERE status = 'scheduled' AND scheduled_for <= $1
+         ORDER BY scheduled_for, created_at
+         FOR UPDATE SKIP LOCKED
+         LIMIT $2
+       )
+       UPDATE scheduled_emails AS emails
+       SET status = 'sending', updated_at = $1
+       FROM due
+       WHERE emails.id = due.id AND emails.status = 'scheduled'
+       RETURNING emails.*`,
+      [now, limit]
+    );
+    return result.rows.map(scheduledEmailFromRow);
+  }
+
+  async completeScheduledEmailSent(id: string, providerMessageId: string): Promise<ScheduledEmail> {
+    const result = await this.pool.query(
+      `UPDATE scheduled_emails
+       SET status = 'sent', provider_message_id = $2, sent_at = now(), updated_at = now()
+       WHERE id = $1 AND status = 'sending' RETURNING *`,
+      [id, providerMessageId]
+    );
+    if (!result.rows[0]) throw new Error("SCHEDULED_EMAIL_NOT_SENDING");
+    return scheduledEmailFromRow(result.rows[0]);
+  }
+
+  async completeScheduledEmailCanceled(id: string, failureCode: string): Promise<ScheduledEmail> {
+    const result = await this.pool.query(
+      `UPDATE scheduled_emails
+       SET status = 'canceled', failure_code = $2, canceled_at = now(), updated_at = now()
+       WHERE id = $1 AND status = 'sending' RETURNING *`,
+      [id, failureCode]
+    );
+    if (!result.rows[0]) throw new Error("SCHEDULED_EMAIL_NOT_SENDING");
+    return scheduledEmailFromRow(result.rows[0]);
+  }
+
+  async completeScheduledEmailOutcomeUnknown(id: string, failureCode: string): Promise<ScheduledEmail> {
+    const result = await this.pool.query(
+      `UPDATE scheduled_emails
+       SET status = 'outcome_unknown', failure_code = $2, updated_at = now()
+       WHERE id = $1 AND status IN ('preparing', 'sending') RETURNING *`,
+      [id, failureCode]
+    );
+    if (!result.rows[0]) throw new Error("SCHEDULED_EMAIL_NOT_SENDING");
+    return scheduledEmailFromRow(result.rows[0]);
+  }
+
   private async withOwnedAccount<T>(
     accountId: string,
     ownerId: string | undefined,
@@ -403,5 +538,25 @@ function draftOperationFromRow(row: QueryResultRow): DraftOperation {
     status: row.status,
     ...(row.provider_draft_id ? { providerDraftId: row.provider_draft_id } : {}),
     updatedAt: new Date(row.updated_at).toISOString()
+  };
+}
+
+function scheduledEmailFromRow(row: QueryResultRow): ScheduledEmail {
+  return {
+    id: row.id,
+    accountId: row.gmail_account_id,
+    agentId: row.raft_agent_id,
+    serverId: row.raft_server_id,
+    operationId: row.operation_id,
+    requestHash: row.request_hash,
+    ...(row.provider_draft_id ? { providerDraftId: row.provider_draft_id } : {}),
+    ...(row.provider_message_id ? { providerMessageId: row.provider_message_id } : {}),
+    scheduledFor: new Date(row.scheduled_for).toISOString(),
+    status: row.status,
+    ...(row.failure_code ? { failureCode: row.failure_code } : {}),
+    createdAt: new Date(row.created_at).toISOString(),
+    updatedAt: new Date(row.updated_at).toISOString(),
+    ...(row.sent_at ? { sentAt: new Date(row.sent_at).toISOString() } : {}),
+    ...(row.canceled_at ? { canceledAt: new Date(row.canceled_at).toISOString() } : {})
   };
 }

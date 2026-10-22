@@ -1,4 +1,4 @@
-export type GrantScope = "gmail.read" | "gmail.draft";
+export type GrantScope = "gmail.read" | "gmail.draft" | "gmail.schedule";
 
 export interface HumanPrincipal {
   type: "human";

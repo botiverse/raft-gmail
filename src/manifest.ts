@@ -9,7 +9,7 @@ export function buildManifest(appOrigin: string, service = "raft-gmail") {
     schema: "raft-agent-manifest.v0" as const,
     service,
     name: "Raft Gmail",
-    description: "Self-hosted Gmail read and draft capabilities controlled by per-account Raft Agent grants.",
+    description: "Self-hosted Gmail read, draft, and scheduled-send capabilities controlled by per-account Raft Agent grants.",
     app_origin: appOrigin,
     execution: {
       mode: "http_api" as const,
@@ -29,10 +29,10 @@ export function buildManifest(appOrigin: string, service = "raft-gmail") {
       action(
         "gmail-access-request",
         "/actions/gmail-access-request",
-        "Request human approval for read and/or draft access to selected Gmail accounts.",
+        "Request human approval for read, draft, and/or scheduled-send access to selected Gmail accounts.",
         {
           ownerRef: { type: "string", description: "Signed owner reference copied from the owner's dashboard.", required: true },
-          scopes: { type: "string[]", description: "Requested capabilities: gmail.read and/or gmail.draft.", required: true },
+          scopes: { type: "string[]", description: "Requested capabilities: gmail.read, gmail.draft, and/or gmail.schedule.", required: true },
           reason: { type: "string", description: "Why the Agent needs this access.", required: true }
         }
       ),
@@ -69,6 +69,36 @@ export function buildManifest(appOrigin: string, service = "raft-gmail") {
           ...draftParameters(),
           draftId: { type: "string", description: "Existing Gmail draft ID.", required: true }
         }
+      ),
+      action(
+        "gmail-scheduled-send-create",
+        "/actions/gmail-scheduled-send-create",
+        "Create a Gmail draft now and send it once at a future time. Requires the separate gmail.schedule grant.",
+        {
+          ...draftParameters(),
+          scheduledFor: {
+            type: "string",
+            description: "ISO 8601 timestamp between 1 minute and 365 days in the future.",
+            required: true
+          }
+        }
+      ),
+      action(
+        "gmail-scheduled-send-list",
+        "/actions/gmail-scheduled-send-list",
+        "List this Agent's scheduled-send jobs for one authorized Gmail account without returning message content.",
+        {
+          accountId: { type: "string", description: "Authorized Gmail account UUID.", required: true }
+        }
+      ),
+      action(
+        "gmail-scheduled-send-cancel",
+        "/actions/gmail-scheduled-send-cancel",
+        "Cancel this Agent's scheduled email while it is still waiting to send.",
+        {
+          accountId: { type: "string", description: "Authorized Gmail account UUID.", required: true },
+          scheduledEmailId: { type: "string", description: "Scheduled email UUID returned by create or list.", required: true }
+        }
       )
     ],
     credential_boundary: {
@@ -77,7 +107,6 @@ export function buildManifest(appOrigin: string, service = "raft-gmail") {
     },
     unsupported: [
       "gmail.send",
-      "gmail.schedule",
       "gmail.delete",
       "gmail.archive",
       "gmail.mark_read",

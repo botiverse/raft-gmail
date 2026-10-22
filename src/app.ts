@@ -14,7 +14,8 @@ import {
   type GmailGateway,
   type GrantScope,
   type RaftPrincipal,
-  type Repository
+  type Repository,
+  type ScheduledEmail
 } from "./types.js";
 
 declare module "express-serve-static-core" {
@@ -65,6 +66,11 @@ const draftInputSchema = z.object({
 });
 
 const updateDraftSchema = draftInputSchema.extend({ draftId: z.string().min(1).max(256) });
+const scheduledEmailCreateSchema = draftInputSchema.extend({
+  scheduledFor: z.iso.datetime({ offset: true })
+});
+const scheduledEmailListSchema = z.object({ accountId: z.uuid() });
+const scheduledEmailCancelSchema = z.object({ accountId: z.uuid(), scheduledEmailId: z.uuid() });
 
 export function createApp(dependencies: AppDependencies) {
   const { config, repository, tokenVault, raftIdentity, googleIdentity, gmail } = dependencies;
@@ -209,8 +215,8 @@ export function createApp(dependencies: AppDependencies) {
     const prompt = [
       "Request Gmail access from me in Raft Gmail.",
       `Use the gmail-access-request action with ownerRef ${ownerRef}.`,
-      "Ask only for gmail.read and/or gmail.draft, and explain why you need them.",
-      `This request code expires ${expiresAt}. Sending mail is not available.`
+      "Ask only for gmail.read, gmail.draft, and/or gmail.schedule, and explain why you need them.",
+      `This request code expires ${expiresAt}. gmail.schedule can send only at a future scheduled time.`
     ].join(" ");
     res.json({ ok: true, result: { prompt, ownerRef, expiresAt } });
   });
@@ -406,6 +412,127 @@ export function createApp(dependencies: AppDependencies) {
     });
   }));
 
+  app.post("/actions/gmail-scheduled-send-create", requireAgentSession(repository), asyncRoute(async (req, res) => {
+    const body = scheduledEmailCreateSchema.parse(req.body);
+    const scheduledFor = new Date(body.scheduledFor);
+    const context = await authorizeAgent(repository, req, body.accountId, "gmail.schedule");
+    if (!context.ok) return sendError(res, context.status, context.code, context.message);
+    const session = req.agentSession!;
+    const requestHash = crypto.createHash("sha256").update(JSON.stringify(body)).digest("hex");
+    const existing = await repository.getScheduledEmailByOperation(
+      body.accountId,
+      session.agentId,
+      body.operationId
+    );
+    if (existing) return scheduledEmailReplayResponse(res, existing, requestHash);
+
+    const minimum = now().getTime() + 60_000;
+    const maximum = now().getTime() + 365 * 24 * 60 * 60 * 1000;
+    if (scheduledFor.getTime() < minimum || scheduledFor.getTime() > maximum) {
+      return sendError(
+        res,
+        400,
+        "SCHEDULE_TIME_INVALID",
+        "scheduledFor must be between 1 minute and 365 days in the future."
+      );
+    }
+    const timestamp = now().toISOString();
+    const begun = await repository.beginScheduledEmail({
+      id: crypto.randomUUID(),
+      accountId: body.accountId,
+      agentId: session.agentId,
+      serverId: session.serverId,
+      operationId: body.operationId,
+      requestHash,
+      scheduledFor: scheduledFor.toISOString(),
+      status: "preparing",
+      createdAt: timestamp,
+      updatedAt: timestamp
+    });
+    if (!begun.created) {
+      return scheduledEmailReplayResponse(res, begun.email, requestHash);
+    }
+
+    const input: DraftInput = {
+      to: body.to,
+      ...(body.cc ? { cc: body.cc } : {}),
+      subject: body.subject,
+      bodyText: body.bodyText,
+      ...(body.bodyHtml !== undefined ? { bodyHtml: body.bodyHtml } : {}),
+      ...(body.threadId ? { threadId: body.threadId } : {})
+    };
+    let scheduled: ScheduledEmail;
+    try {
+      const draft = await gmail.createDraft(tokenVault.decrypt(context.account.encryptedRefreshToken), input);
+      scheduled = await repository.completeScheduledEmailPreparation(
+        begun.email.id,
+        body.accountId,
+        session.agentId,
+        draft.id
+      );
+    } catch {
+      await repository.completeScheduledEmailOutcomeUnknown(begun.email.id, "DRAFT_CREATE_OUTCOME_UNKNOWN");
+      await repository.appendAudit({
+        actorType: "agent",
+        actorId: session.agentId,
+        serverId: session.serverId,
+        accountId: body.accountId,
+        action: "gmail.scheduled_send.create",
+        outcome: "failed",
+        operationId: body.operationId,
+        metadata: { scheduledEmailId: begun.email.id, outcomeUnknown: true }
+      });
+      return sendError(
+        res,
+        502,
+        "OPERATION_OUTCOME_UNKNOWN",
+        "The Gmail draft creation outcome is unknown. The service will not retry it automatically."
+      );
+    }
+    await succeededAudit(repository, req, body.accountId, "gmail.scheduled_send.create", {
+      operationId: body.operationId,
+      scheduledEmailId: scheduled.id,
+      providerDraftId: scheduled.providerDraftId,
+      scheduledFor: scheduled.scheduledFor
+    });
+    return res.json({ ok: true, result: { ...publicScheduledEmail(scheduled), replayed: false } });
+  }));
+
+  app.post("/actions/gmail-scheduled-send-list", requireAgentSession(repository), asyncRoute(async (req, res) => {
+    const body = scheduledEmailListSchema.parse(req.body);
+    const context = await authorizeAgent(repository, req, body.accountId, "gmail.schedule");
+    if (!context.ok) return sendError(res, context.status, context.code, context.message);
+    const session = req.agentSession!;
+    const emails = await repository.listScheduledEmails(body.accountId, session.agentId, session.serverId);
+    await succeededAudit(repository, req, body.accountId, "gmail.scheduled_send.list", { resultCount: emails.length });
+    res.json({ ok: true, result: emails.map(publicScheduledEmail) });
+  }));
+
+  app.post("/actions/gmail-scheduled-send-cancel", requireAgentSession(repository), asyncRoute(async (req, res) => {
+    const body = scheduledEmailCancelSchema.parse(req.body);
+    const context = await authorizeAgent(repository, req, body.accountId, "gmail.schedule");
+    if (!context.ok) return sendError(res, context.status, context.code, context.message);
+    const session = req.agentSession!;
+    const canceled = await repository.cancelScheduledEmail(
+      body.scheduledEmailId,
+      body.accountId,
+      session.agentId,
+      session.serverId
+    );
+    if (!canceled) {
+      return sendError(
+        res,
+        409,
+        "SCHEDULED_EMAIL_NOT_CANCELABLE",
+        "The scheduled email was not found or is no longer waiting to send."
+      );
+    }
+    await succeededAudit(repository, req, body.accountId, "gmail.scheduled_send.cancel", {
+      scheduledEmailId: canceled.id
+    });
+    res.json({ ok: true, result: publicScheduledEmail(canceled) });
+  }));
+
   if (dependencies.clientDistPath) {
     app.use(express.static(dependencies.clientDistPath, { index: false }));
   }
@@ -415,7 +542,7 @@ export function createApp(dependencies: AppDependencies) {
       return res.sendFile("index.html", { root: dependencies.clientDistPath });
     }
     const principal = req.session?.principal as RaftPrincipal | undefined;
-    res.type("html").send(`<!doctype html><html><head><meta charset="utf-8"><title>Raft Gmail</title></head><body><h1>Raft Gmail</h1><p>Self-hosted Gmail read and draft capabilities for explicitly authorized Raft Agents.</p><p>${principal ? `Signed in as ${escapeHtml(principal.name)}. <a href="/auth/google/start">Connect Gmail</a>` : '<a href="/auth/raft/login">Login with Raft</a>'}</p><p><a href="/.well-known/raft-app-manifest.json">App manifest</a></p></body></html>`);
+    res.type("html").send(`<!doctype html><html><head><meta charset="utf-8"><title>Raft Gmail</title></head><body><h1>Raft Gmail</h1><p>Self-hosted Gmail read, draft, and scheduled-send capabilities for explicitly authorized Raft Agents.</p><p>${principal ? `Signed in as ${escapeHtml(principal.name)}. <a href="/auth/google/start">Connect Gmail</a>` : '<a href="/auth/raft/login">Login with Raft</a>'}</p><p><a href="/.well-known/raft-app-manifest.json">App manifest</a></p></body></html>`);
   });
 
   app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
@@ -596,6 +723,38 @@ async function succeededAudit(
 
 function publicAccount(account: GmailAccount) {
   return { id: account.id, email: account.email, serverId: account.serverId, createdAt: account.createdAt };
+}
+
+function publicScheduledEmail(email: ScheduledEmail) {
+  return {
+    id: email.id,
+    accountId: email.accountId,
+    operationId: email.operationId,
+    scheduledFor: email.scheduledFor,
+    status: email.status,
+    ...(email.providerDraftId ? { providerDraftId: email.providerDraftId } : {}),
+    ...(email.providerMessageId ? { providerMessageId: email.providerMessageId } : {}),
+    ...(email.failureCode ? { failureCode: email.failureCode } : {}),
+    createdAt: email.createdAt,
+    updatedAt: email.updatedAt,
+    ...(email.sentAt ? { sentAt: email.sentAt } : {}),
+    ...(email.canceledAt ? { canceledAt: email.canceledAt } : {})
+  };
+}
+
+function scheduledEmailReplayResponse(res: Response, email: ScheduledEmail, requestHash: string) {
+  if (email.requestHash !== requestHash) {
+    return sendError(res, 409, "OPERATION_ID_REUSED", "The operation ID was already used for a different request.");
+  }
+  if (email.status === "preparing" || email.status === "outcome_unknown") {
+    return sendError(
+      res,
+      409,
+      "OPERATION_OUTCOME_UNKNOWN",
+      "A prior attempt may have created the Gmail draft. Reconcile it before using a new operation ID."
+    );
+  }
+  return res.json({ ok: true, result: { ...publicScheduledEmail(email), replayed: true } });
 }
 
 function humanPrincipal(req: Request): RaftPrincipal & { type: "human" } {

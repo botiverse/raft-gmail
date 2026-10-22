@@ -2,7 +2,7 @@ import { mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { chromium, type BrowserContext } from "playwright";
 
-const outputDir = resolve("artifacts");
+const outputDir = resolve("output/playwright");
 await mkdir(outputDir, { recursive: true });
 
 const browser = await chromium.launch({
@@ -20,7 +20,7 @@ const grants = [
     agentId: "9c3b3d7f-291a-4a21-862b-37e754186cdf",
     agentName: "John",
     serverId: "95f993fa-2a68-4797-b8ae-7beb7d984ada",
-    scopes: ["gmail.read", "gmail.draft"],
+    scopes: ["gmail.read", "gmail.draft", "gmail.schedule"],
     enabled: true,
     updatedAt: "2026-09-18T00:00:00.000Z"
   },
@@ -38,7 +38,7 @@ const accessRequests = [{
   id: "33333333-3333-4333-8333-333333333333",
   agentId: "ed0e8f7a-0c7e-4c17-a13e-c2e419b164af",
   agentName: "Mail Triage Agent",
-  requestedScopes: ["gmail.read", "gmail.draft"],
+  requestedScopes: ["gmail.read", "gmail.draft", "gmail.schedule"],
   reason: "Triage incoming mail and prepare reply drafts for review.",
   status: "pending",
   createdAt: "2026-09-18T00:00:00.000Z"
@@ -66,7 +66,7 @@ async function mockDashboard(context: BrowserContext, empty = false) {
   await context.route("**/api/access-request-instructions", (route) => route.fulfill({
     contentType: "application/json",
     body: JSON.stringify({ ok: true, result: {
-      prompt: "Request Gmail access from me in Raft Gmail. Use the gmail-access-request action with the secure owner reference in this prompt. Ask only for read and/or draft access and explain why you need it. Sending mail is unavailable.",
+      prompt: "Request Gmail access from me in Raft Gmail. Use the gmail-access-request action with the secure owner reference in this prompt. Ask only for read, draft, and/or scheduled-send access and explain why you need it.",
       ownerRef: "signed-owner-reference",
       expiresAt: "2026-09-25T00:00:00.000Z"
     } })
@@ -120,6 +120,10 @@ await captureInteractive("dashboard-review-request.png", { width: 1440, height: 
   await page.getByRole("button", { name: "Review request" }).click();
   await page.getByRole("button", { name: "Approve access" }).waitFor();
   await page.waitForTimeout(500);
+});
+await captureInteractive("dashboard-edit-permissions.png", { width: 1440, height: 950 }, async (page) => {
+  await page.getByRole("button", { name: "Edit permissions" }).first().click();
+  await page.getByRole("checkbox", { name: "Schedule send" }).waitFor();
 });
 
 await browser.close();

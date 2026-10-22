@@ -19,12 +19,18 @@ describe("database migration layout", () => {
     assert.equal(d1Binding?.migrations_dir, "migrations/d1");
     const postgresFiles = await discover(POSTGRES_MIGRATIONS_GLOB);
     const d1Files = await discover(`${d1Binding.migrations_dir}/*.sql`);
-    assert.deepEqual(postgresFiles, ["migrations/postgres/0001_initial.sql"]);
-    assert.deepEqual(d1Files, ["migrations/d1/0001_initial.sql"]);
+    assert.deepEqual(postgresFiles, [
+      "migrations/postgres/0001_initial.sql",
+      "migrations/postgres/0002_scheduled_emails.sql"
+    ]);
+    assert.deepEqual(d1Files, [
+      "migrations/d1/0001_initial.sql",
+      "migrations/d1/0002_scheduled_emails.sql"
+    ]);
     assert.deepEqual(await discover("migrations/*.sql"), []);
 
-    const postgresSql = await readFile(postgresFiles[0]!, "utf8");
-    const d1Sql = await readFile(d1Files[0]!, "utf8");
+    const postgresSql = (await Promise.all(postgresFiles.map((file) => readFile(file, "utf8")))).join("\n");
+    const d1Sql = (await Promise.all(d1Files.map((file) => readFile(file, "utf8")))).join("\n");
     assert.match(postgresSql, /CREATE EXTENSION IF NOT EXISTS pgcrypto/);
     assert.doesNotMatch(postgresSql, /PRAGMA foreign_keys/);
     assert.match(d1Sql, /PRAGMA foreign_keys = ON/);
