@@ -9,7 +9,8 @@ import type {
   DraftOperation,
   GmailAccount,
   GmailGateway,
-  Repository
+  Repository,
+  ScheduledEmail
 } from "../src/types.js";
 
 export class MemoryRepository implements Repository {
@@ -19,6 +20,7 @@ export class MemoryRepository implements Repository {
   sessions = new Map<string, AgentSession>();
   audit: AuditEvent[] = [];
   operations = new Map<string, DraftOperation>();
+  scheduledEmails = new Map<string, ScheduledEmail>();
 
   constructor(private readonly now: () => Date = () => new Date()) {}
 
@@ -226,6 +228,109 @@ export class MemoryRepository implements Repository {
     this.operations.set(key, complete);
     return complete;
   }
+
+  async beginScheduledEmail(email: ScheduledEmail) {
+    const existing = [...this.scheduledEmails.values()].find(
+      (candidate) => candidate.accountId === email.accountId && candidate.agentId === email.agentId &&
+        candidate.operationId === email.operationId
+    );
+    if (existing) return { created: false, email: existing };
+    this.scheduledEmails.set(email.id, email);
+    return { created: true, email };
+  }
+
+  async completeScheduledEmailPreparation(id: string, accountId: string, agentId: string, providerDraftId: string) {
+    const email = this.scheduledEmails.get(id);
+    if (!email || email.accountId !== accountId || email.agentId !== agentId || email.status !== "preparing") {
+      throw new Error("SCHEDULED_EMAIL_NOT_PREPARING");
+    }
+    return this.updateScheduledEmail(id, {
+      status: "scheduled",
+      providerDraftId,
+      updatedAt: this.now().toISOString()
+    });
+  }
+
+  async listScheduledEmails(accountId: string, agentId: string, serverId: string) {
+    return [...this.scheduledEmails.values()]
+      .filter((email) => email.accountId === accountId && email.agentId === agentId && email.serverId === serverId)
+      .sort((left, right) => right.scheduledFor.localeCompare(left.scheduledFor));
+  }
+
+  async getScheduledEmailByOperation(accountId: string, agentId: string, operationId: string) {
+    return [...this.scheduledEmails.values()].find(
+      (email) => email.accountId === accountId && email.agentId === agentId && email.operationId === operationId
+    ) ?? null;
+  }
+
+  async cancelScheduledEmail(id: string, accountId: string, agentId: string, serverId: string) {
+    const email = this.scheduledEmails.get(id);
+    if (!email || email.accountId !== accountId || email.agentId !== agentId || email.serverId !== serverId ||
+        email.status !== "scheduled") return null;
+    const timestamp = this.now().toISOString();
+    return this.updateScheduledEmail(id, {
+      status: "canceled",
+      failureCode: "CANCELED_BY_AGENT",
+      canceledAt: timestamp,
+      updatedAt: timestamp
+    });
+  }
+
+  async claimDueScheduledEmails(now: string, limit: number) {
+    const due = [...this.scheduledEmails.values()]
+      .filter((email) => email.status === "scheduled" && email.scheduledFor <= now)
+      .sort((left, right) => left.scheduledFor.localeCompare(right.scheduledFor))
+      .slice(0, limit);
+    return due.map((email) => this.updateScheduledEmail(email.id, { status: "sending", updatedAt: now }));
+  }
+
+  async completeScheduledEmailSent(id: string, providerMessageId: string) {
+    const email = this.requireSending(id);
+    const timestamp = this.now().toISOString();
+    return this.updateScheduledEmail(email.id, {
+      status: "sent",
+      providerMessageId,
+      sentAt: timestamp,
+      updatedAt: timestamp
+    });
+  }
+
+  async completeScheduledEmailCanceled(id: string, failureCode: string) {
+    const email = this.requireSending(id);
+    const timestamp = this.now().toISOString();
+    return this.updateScheduledEmail(email.id, {
+      status: "canceled",
+      failureCode,
+      canceledAt: timestamp,
+      updatedAt: timestamp
+    });
+  }
+
+  async completeScheduledEmailOutcomeUnknown(id: string, failureCode: string) {
+    const email = this.scheduledEmails.get(id);
+    if (!email || (email.status !== "preparing" && email.status !== "sending")) {
+      throw new Error("SCHEDULED_EMAIL_NOT_SENDING");
+    }
+    return this.updateScheduledEmail(id, {
+      status: "outcome_unknown",
+      failureCode,
+      updatedAt: this.now().toISOString()
+    });
+  }
+
+  private requireSending(id: string) {
+    const email = this.scheduledEmails.get(id);
+    if (!email || email.status !== "sending") throw new Error("SCHEDULED_EMAIL_NOT_SENDING");
+    return email;
+  }
+
+  private updateScheduledEmail(id: string, patch: Partial<ScheduledEmail>) {
+    const existing = this.scheduledEmails.get(id);
+    if (!existing) throw new Error("SCHEDULED_EMAIL_NOT_FOUND");
+    const updated = { ...existing, ...patch };
+    this.scheduledEmails.set(id, updated);
+    return updated;
+  }
 }
 
 export class FakeGmail implements GmailGateway {
@@ -233,7 +338,9 @@ export class FakeGmail implements GmailGateway {
   readCalls = 0;
   createCalls = 0;
   updateCalls = 0;
+  sendCalls = 0;
   failNextCreate = false;
+  failNextSend = false;
   lastCreateInput: DraftInput | undefined;
   lastUpdateInput: DraftInput | undefined;
 
@@ -261,5 +368,14 @@ export class FakeGmail implements GmailGateway {
     this.updateCalls += 1;
     this.lastUpdateInput = input;
     return { id: draftId, messageId: `updated-${this.updateCalls}` };
+  }
+
+  async sendDraft(_refreshToken: string, draftId: string) {
+    this.sendCalls += 1;
+    if (this.failNextSend) {
+      this.failNextSend = false;
+      throw new Error("provider transport failed");
+    }
+    return { id: `sent-${this.sendCalls}`, threadId: `thread-${draftId}` };
   }
 }

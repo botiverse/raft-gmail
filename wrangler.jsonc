@@ -11,6 +11,9 @@
       "persist": true
     }
   },
+  "triggers": {
+    "crons": ["* * * * *"]
+  },
   "vars": {
     "APP_ORIGIN": "https://raft-gmail.botiverse.workers.dev",
     "RAFT_APP_ORIGIN": "https://app.raft.build",

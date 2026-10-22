@@ -2,9 +2,9 @@
 
 ## Product contract
 
-A Raft human may connect multiple Gmail accounts. For each account, that human controls which exact Raft Agents may use `gmail.read` and `gmail.draft`. A draft-granted Agent may create or update a draft without per-item approval. No service action can send mail.
+A Raft human may connect multiple Gmail accounts. For each account, that human controls which exact Raft Agents may use `gmail.read`, `gmail.draft`, and `gmail.schedule`. A draft-granted Agent may create or update a draft without per-item approval. A schedule-granted Agent may create a Gmail draft for one future delivery, list its own jobs, and cancel a job before execution. There is no immediate-send action.
 
-The output destination is deliberately not part of the account model. A synchronous call returns structured data to the Agent that invoked it. Any future scheduled job must store an explicit delivery target and revalidate that target at delivery time; this version has no scheduled jobs.
+The Raft output destination is deliberately not part of the account model. Synchronous results return to the invoking Agent. Scheduled email recipients are stored only inside the provider draft, not in the service database; execution revalidates the exact Agent grant and account before sending.
 
 ## Trust boundaries
 
@@ -14,7 +14,7 @@ The output destination is deliberately not part of the account model. A synchron
 | Raft Agent | Uses its own Login with Raft identity and a short-lived service-local session. |
 | Gmail account | Holds an encrypted Google refresh token owned by one Raft human on one Server. |
 | Access request | Captures the authenticated Agent ID/name, requested scopes, reason, owner, and Server. It confers no capability. |
-| Agent grant | Names one account, one authenticated Agent ID/name snapshot, one Server, and one or both v1 scopes. |
+| Agent grant | Names one account, one authenticated Agent ID/name snapshot, one Server, and an explicit subset of the three scopes. |
 | Provider token | Never returned through owner APIs, Agent actions, manifests, logs, or audit metadata. |
 | Output | Returned to the caller; no fixed channel or server-side delivery guess. |
 
@@ -29,8 +29,11 @@ Account existence is hidden across Server boundaries: an Agent from another Serv
 | `gmail-read` | `gmail.read` | none |
 | `gmail-draft-create` | `gmail.draft` | creates a draft |
 | `gmail-draft-update` | `gmail.draft` | updates a draft |
+| `gmail-scheduled-send-create` | `gmail.schedule` | creates a provider draft and durable future job |
+| `gmail-scheduled-send-list` | `gmail.schedule` | none |
+| `gmail-scheduled-send-cancel` | `gmail.schedule` | cancels a waiting job; leaves the provider draft intact |
 
-There is no send, schedule, delete, archive, or mark-read route. The Google `gmail.compose` scope still technically permits send; this narrower contract is enforced by the service implementation and must be reviewed on every change.
+There is no immediate-send, delete, archive, or mark-read route. The Google `gmail.compose` scope technically permits send; the service limits that provider operation to the scheduled worker after an atomic claim and live grant check.
 
 Both draft actions require `bodyText`. An optional `bodyHtml` adds a rich-text alternative: the Gmail message is encoded as `multipart/alternative`, with the plain-text fallback first and the HTML part last. Requests without `bodyHtml` retain the original `text/plain` message shape. This is an API payload capability only; an HTML-composer UI remains out of scope.
 
@@ -53,11 +56,20 @@ Every draft write requires a stable caller-generated operation ID.
 
 The pending marker prevents duplicate drafts in the dangerous direction. A future release should add an owner-visible reconciliation UI rather than silently clearing pending writes.
 
-## Scheduling boundary
+## Scheduled-send boundary
 
-The default orchestration layer is the Agent: a Raft reminder wakes the Agent, the Agent calls this service, and the synchronous result returns to that Agent. This keeps timing and presentation in the component that has the live conversation context while the service remains a narrow Gmail capability boundary.
+Scheduled send is a distinct durable primitive and capability, not a delayed invocation of the ordinary draft action.
 
-A future app-native scheduler is justified only for monitors that must run while the Agent is offline. It should be a distinct durable primitive with an owner, Gmail account, exact Agent principal, query, schedule, and app-owned result inbox. Each run must revalidate the live Agent grant. It must not persist or guess a Raft channel; the Agent retrieves the result and chooses the current destination. A future reliable Raft Agent-event delivery mechanism could replace polling without changing this stored contract.
+1. Validate the request, future time, Agent session, account, and live `gmail.schedule` grant.
+2. Persist a content-free `preparing` job with an idempotency key and request hash.
+3. Create the Gmail draft. Message recipients, subject, and body live only in Gmail.
+4. Persist the provider draft ID and move the job to `scheduled`.
+5. A one-minute Worker trigger atomically claims due jobs as `sending`.
+6. Re-read the account and exact Agent grant. Missing or revoked capability cancels without calling Gmail.
+7. Call Gmail `users.drafts.send` once. Verified success moves to `sent`.
+8. Any ambiguous provider result moves to `outcome_unknown`; the worker never retries it automatically.
+
+Only `scheduled` jobs can be canceled by the originating Agent. Canceling leaves the Gmail draft available for human inspection. `preparing`, `sending`, and `outcome_unknown` require reconciliation rather than a second provider call. A Worker crash after the atomic claim deliberately leaves `sending`, favoring no duplicate over automatic recovery.
 
 ## Data model
 
@@ -66,15 +78,16 @@ A future app-native scheduler is justified only for monitors that must run while
 - `agent_access_requests`: owner, Server, authenticated Agent ID/name snapshot, requested scopes, reason, and decision state.
 - `agent_sessions`: hash of opaque local token, Agent identity, Server, expiry.
 - `draft_operations`: idempotency key, request hash, pending/succeeded state, provider draft ID.
+- `scheduled_emails`: exact Agent/account/Server, idempotency key and hash, provider draft/message IDs, future time, lifecycle status, and content-free failure metadata.
 - `audit_events`: actor, Server, account reference, action, outcome, operation ID, content-free metadata.
 
-Deleting an account cascades its grants and draft-operation metadata. Audit rows keep the event but clear the account foreign key. Deployments must define their own retention and backup policy.
+Deleting an account cascades its grants, draft-operation metadata, and scheduled jobs. Audit rows keep the event but clear the account foreign key. Deployments must define their own retention, reconciliation, and backup policy.
 
 ## Out of scope for v0.1
 
 - hosted multi-tenant operation;
 - app-native scheduled monitoring, result inboxes, or channel delivery;
-- mail sending;
+- immediate or arbitrary mail sending outside a previously created scheduled job;
 - mailbox state changes other than drafts;
 - HTML-composer UI;
 - Google OAuth verification on behalf of third-party operators;

@@ -3,6 +3,7 @@ import {
   AlertCircle,
   Bot,
   Check,
+  Clock3,
   Clipboard,
   CircleUserRound,
   FilePenLine,
@@ -385,9 +386,9 @@ export function DashboardApp({ api = dashboardApi }: { api?: DashboardApi }) {
               />
 
               <Banner status="info" size="md">
-                <BannerTitle>Read and draft only</BannerTitle>
+                <BannerTitle>Account-scoped permissions</BannerTitle>
                 <BannerDescription>
-                  Authorized Agents can search and read mail, and maintain Gmail drafts. Sending mail is not available.
+                  Read, draft, and scheduled send are separate grants. Immediate sending is not available.
                 </BannerDescription>
               </Banner>
 
@@ -687,6 +688,7 @@ function GrantCard({
         <div className="flex flex-wrap gap-2">
           {grant.scopes.includes("gmail.read") ? <Badge variant="information"><Inbox className="size-3" /> Read mail</Badge> : null}
           {grant.scopes.includes("gmail.draft") ? <Badge variant="accent"><FilePenLine className="size-3" /> Maintain drafts</Badge> : null}
+          {grant.scopes.includes("gmail.schedule") ? <Badge variant="warning"><Clock3 className="size-3" /> Schedule send</Badge> : null}
         </div>
         <Separator />
         <div className="flex flex-wrap justify-end gap-2">
@@ -786,7 +788,18 @@ function GrantDialog({
                   />
                   <span className="grid gap-0.5">
                     <span className="text-sm font-medium text-foreground">Maintain drafts</span>
-                    <span className="text-xs text-foreground-muted">Create and update drafts. Sending remains unavailable.</span>
+                    <span className="text-xs text-foreground-muted">Create and update drafts without sending them.</span>
+                  </span>
+                </label>
+                <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-line-muted bg-layer-panel p-3">
+                  <Checkbox
+                    checked={draft.scopes.includes("gmail.schedule")}
+                    onCheckedChange={(checked) => toggleScope("gmail.schedule", checked === true)}
+                    aria-label="Schedule send"
+                  />
+                  <span className="grid gap-0.5">
+                    <span className="text-sm font-medium text-foreground">Schedule send</span>
+                    <span className="text-xs text-foreground-muted">Create a Gmail draft and send it once at a future time.</span>
                   </span>
                 </label>
               </div>
@@ -794,8 +807,8 @@ function GrantDialog({
             </fieldset>
 
             <Banner status="info" size="sm">
-              <BannerTitle>No send capability</BannerTitle>
-              <BannerDescription>Neither permission lets the Agent send mail.</BannerDescription>
+              <BannerTitle>Scheduled send is separate</BannerTitle>
+              <BannerDescription>Only Schedule send authorizes a future delivery. Immediate sending is never available.</BannerDescription>
             </Banner>
           </DialogBody>
           <DialogFooter>
@@ -852,7 +865,7 @@ function AddAgentDialog({
           </div>
           <Banner status="info" size="sm">
             <BannerTitle>You approve before access begins</BannerTitle>
-            <BannerDescription>The Agent requests read and/or draft access. You choose the Gmail accounts and may narrow the permissions. Sending is never available.</BannerDescription>
+            <BannerDescription>The Agent requests read, draft, and/or scheduled-send access. You choose the Gmail accounts and may narrow the permissions.</BannerDescription>
           </Banner>
         </DialogBody>
         <DialogFooter>
@@ -901,6 +914,7 @@ function AccessRequestsView({
                   <div className="flex flex-wrap gap-2">
                     {request.requestedScopes.includes("gmail.read") ? <Badge variant="information"><Inbox className="size-3" /> Read mail</Badge> : null}
                     {request.requestedScopes.includes("gmail.draft") ? <Badge variant="accent"><FilePenLine className="size-3" /> Maintain drafts</Badge> : null}
+                    {request.requestedScopes.includes("gmail.schedule") ? <Badge variant="warning"><Clock3 className="size-3" /> Schedule send</Badge> : null}
                   </div>
                   <Button type="button" variant="accent" size="sm" onClick={() => onReview(request)}>Review request</Button>
                 </CardContent>
@@ -996,9 +1010,9 @@ function ReviewRequestDialog({
                       onCheckedChange={(checked) => setScopes(checked === true
                         ? [...new Set([...scopes, scope])]
                         : scopes.filter((item) => item !== scope))}
-                      aria-label={scope === "gmail.read" ? "Read mail" : "Maintain drafts"}
+                      aria-label={scopeLabel(scope)}
                     />
-                    <span className="text-sm text-foreground">{scope === "gmail.read" ? "Read mail" : "Maintain drafts"}</span>
+                    <span className="text-sm text-foreground">{scopeLabel(scope)}</span>
                   </label>
                 ))}
               </fieldset>
@@ -1038,7 +1052,7 @@ function NoAccounts() {
             <EmptyStateIcon><Mail /></EmptyStateIcon>
             <EmptyStateTitle>Connect your first Gmail account</EmptyStateTitle>
             <EmptyStateDescription>
-              You stay in control of which Agents may read mail or maintain drafts for each account.
+              You stay in control of which Agents may read mail, maintain drafts, or schedule sends for each account.
             </EmptyStateDescription>
             <EmptyStateActions>
               <Button render={<a href="/auth/google/start" />} variant="accent">
@@ -1104,6 +1118,12 @@ function initials(email: string) {
 
 function shortAgentId(agentId: string) {
   return agentId.length > 18 ? `Agent ${agentId.slice(0, 8)}` : agentId;
+}
+
+function scopeLabel(scope: GrantScope) {
+  if (scope === "gmail.read") return "Read mail";
+  if (scope === "gmail.draft") return "Maintain drafts";
+  return "Schedule send";
 }
 
 function messageFor(cause: unknown) {

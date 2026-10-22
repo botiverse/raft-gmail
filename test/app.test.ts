@@ -105,7 +105,12 @@ async function loginAgent(app: ReturnType<typeof createApp>, code: string) {
   return result.body.agentSessionToken as string;
 }
 
-async function putGrant(repository: MemoryRepository, accountId: string, agentId: string, scopes: Array<"gmail.read" | "gmail.draft">) {
+async function putGrant(
+  repository: MemoryRepository,
+  accountId: string,
+  agentId: string,
+  scopes: Array<"gmail.read" | "gmail.draft" | "gmail.schedule">
+) {
   await repository.putGrant({
     accountId,
     agentId,
@@ -146,7 +151,10 @@ describe("Raft Gmail capability boundary", () => {
         "gmail-search",
         "gmail-read",
         "gmail-draft-create",
-        "gmail-draft-update"
+        "gmail-draft-update",
+        "gmail-scheduled-send-create",
+        "gmail-scheduled-send-list",
+        "gmail-scheduled-send-cancel"
       ]);
       for (const name of ["gmail-draft-create", "gmail-draft-update"]) {
         const action = manifest.actions.find((candidate) => candidate.name === name);
@@ -161,7 +169,7 @@ describe("Raft Gmail capability boundary", () => {
         assert.match(action.endpoint.path, /^\/actions\/gmail-/);
         assert.equal(action.response, undefined);
       }
-      assert.equal(manifest.actions.some((action) => /send|schedule|delete|archive|mark.?read/i.test(action.name)), false);
+      assert.equal(manifest.actions.some((action) => action.name === "gmail-send"), false);
     }
   });
 
@@ -638,7 +646,7 @@ describe("Raft Gmail capability boundary", () => {
     assert.equal(gmail.createCalls, 1);
   });
 
-  it("has no send action or route in the manifest or HTTP surface", async () => {
+  it("has scheduled-send actions but no immediate-send action or route", async () => {
     const { app } = fixture();
     const manifest = await request(app).get("/.well-known/raft-app-manifest.json").expect(200);
     const names = manifest.body.actions.map((action: { name: string }) => action.name);
@@ -648,9 +656,187 @@ describe("Raft Gmail capability boundary", () => {
       "gmail-search",
       "gmail-read",
       "gmail-draft-create",
-      "gmail-draft-update"
+      "gmail-draft-update",
+      "gmail-scheduled-send-create",
+      "gmail-scheduled-send-list",
+      "gmail-scheduled-send-cancel"
     ]);
-    assert.equal(names.some((name: string) => name.includes("send")), false);
+    assert.equal(names.includes("gmail-send"), false);
     await request(app).post("/actions/gmail-send").send({}).expect(404);
+  });
+
+  it("keeps scheduled send behind its own grant and validates a bounded future time", async () => {
+    const { app, gmail, repository } = fixture();
+    const human = request.agent(app);
+    await loginHuman(human);
+    const accountId = await connectGmail(human);
+    await putGrant(repository, accountId, "agent-a", ["gmail.draft"]);
+    const token = await loginAgent(app, "agentA");
+    const payload = {
+      accountId,
+      operationId: "operation-schedule-boundary",
+      to: ["recipient@example.com"],
+      subject: "Tomorrow",
+      bodyText: "A future message.",
+      scheduledFor: "2026-09-18T00:10:00.000Z"
+    };
+
+    await request(app)
+      .post("/actions/gmail-scheduled-send-create")
+      .set("authorization", `Bearer ${token}`)
+      .send(payload)
+      .expect(403);
+    assert.equal(gmail.createCalls, 0);
+
+    await putGrant(repository, accountId, "agent-a", ["gmail.schedule"]);
+    const tooSoon = await request(app)
+      .post("/actions/gmail-scheduled-send-create")
+      .set("authorization", `Bearer ${token}`)
+      .send({ ...payload, scheduledFor: "2026-09-18T00:00:59.999Z" })
+      .expect(400);
+    assert.equal(tooSoon.body.error.code, "SCHEDULE_TIME_INVALID");
+    assert.equal(gmail.createCalls, 0);
+  });
+
+  it("creates, lists, replays, and cancels a scheduled email without storing its content", async () => {
+    const { app, gmail, repository } = fixture();
+    const human = request.agent(app);
+    await loginHuman(human);
+    const accountId = await connectGmail(human);
+    await putGrant(repository, accountId, "agent-a", ["gmail.schedule"]);
+    const token = await loginAgent(app, "agentA");
+    const payload = {
+      accountId,
+      operationId: "operation-schedule-once",
+      to: ["recipient@example.com"],
+      cc: ["copy@example.com"],
+      subject: "Scheduled subject",
+      bodyText: "private scheduled body",
+      bodyHtml: "<p>private scheduled body</p>",
+      scheduledFor: "2026-09-18T00:10:00.000Z"
+    };
+
+    const created = await request(app)
+      .post("/actions/gmail-scheduled-send-create")
+      .set("authorization", `Bearer ${token}`)
+      .send(payload)
+      .expect(200);
+    assert.equal(created.body.result.status, "scheduled");
+    assert.equal(created.body.result.replayed, false);
+    assert.equal(gmail.createCalls, 1);
+    assert.equal(JSON.stringify([...repository.scheduledEmails.values()]).includes("private scheduled body"), false);
+
+    const replayed = await request(app)
+      .post("/actions/gmail-scheduled-send-create")
+      .set("authorization", `Bearer ${token}`)
+      .send(payload)
+      .expect(200);
+    assert.equal(replayed.body.result.id, created.body.result.id);
+    assert.equal(replayed.body.result.replayed, true);
+    assert.equal(gmail.createCalls, 1);
+
+    const listed = await request(app)
+      .post("/actions/gmail-scheduled-send-list")
+      .set("authorization", `Bearer ${token}`)
+      .send({ accountId })
+      .expect(200);
+    assert.equal(listed.body.result.length, 1);
+    assert.equal(listed.text.includes("private scheduled body"), false);
+    assert.equal(listed.text.includes("requestHash"), false);
+    assert.equal(listed.text.includes("serverId"), false);
+
+    await putGrant(repository, accountId, "agent-b", ["gmail.schedule"]);
+    const otherToken = await loginAgent(app, "agentB");
+    const otherList = await request(app)
+      .post("/actions/gmail-scheduled-send-list")
+      .set("authorization", `Bearer ${otherToken}`)
+      .send({ accountId })
+      .expect(200);
+    assert.deepEqual(otherList.body.result, []);
+    await request(app)
+      .post("/actions/gmail-scheduled-send-cancel")
+      .set("authorization", `Bearer ${otherToken}`)
+      .send({ accountId, scheduledEmailId: created.body.result.id })
+      .expect(409);
+
+    const canceled = await request(app)
+      .post("/actions/gmail-scheduled-send-cancel")
+      .set("authorization", `Bearer ${token}`)
+      .send({ accountId, scheduledEmailId: created.body.result.id })
+      .expect(200);
+    assert.equal(canceled.body.result.status, "canceled");
+    assert.equal(gmail.sendCalls, 0);
+
+    const secondCancel = await request(app)
+      .post("/actions/gmail-scheduled-send-cancel")
+      .set("authorization", `Bearer ${token}`)
+      .send({ accountId, scheduledEmailId: created.body.result.id })
+      .expect(409);
+    assert.equal(secondCancel.body.error.code, "SCHEDULED_EMAIL_NOT_CANCELABLE");
+  });
+
+  it("holds an ambiguous scheduled-draft outcome without retrying", async () => {
+    const { app, gmail, repository } = fixture();
+    const human = request.agent(app);
+    await loginHuman(human);
+    const accountId = await connectGmail(human);
+    await putGrant(repository, accountId, "agent-a", ["gmail.schedule"]);
+    const token = await loginAgent(app, "agentA");
+    gmail.failNextCreate = true;
+    const payload = {
+      accountId,
+      operationId: "operation-schedule-ambiguous",
+      to: ["recipient@example.com"],
+      subject: "Maybe scheduled",
+      bodyText: "Do not retry blindly.",
+      scheduledFor: "2026-09-18T00:10:00.000Z"
+    };
+
+    await request(app)
+      .post("/actions/gmail-scheduled-send-create")
+      .set("authorization", `Bearer ${token}`)
+      .send(payload)
+      .expect(502);
+    const held = await request(app)
+      .post("/actions/gmail-scheduled-send-create")
+      .set("authorization", `Bearer ${token}`)
+      .send(payload)
+      .expect(409);
+    assert.equal(held.body.error.code, "OPERATION_OUTCOME_UNKNOWN");
+    assert.equal(gmail.createCalls, 1);
+  });
+
+  it("replays an existing scheduled operation after its requested time has passed", async () => {
+    let timestamp = Date.parse("2026-09-18T00:00:00.000Z");
+    const now = () => new Date(timestamp);
+    const repository = new MemoryRepository(now);
+    const { app, gmail } = fixture(repository, now);
+    const human = request.agent(app);
+    await loginHuman(human);
+    const accountId = await connectGmail(human);
+    await putGrant(repository, accountId, "agent-a", ["gmail.schedule"]);
+    const token = await loginAgent(app, "agentA");
+    const payload = {
+      accountId,
+      operationId: "operation-schedule-late-replay",
+      to: ["recipient@example.com"],
+      subject: "Replay",
+      bodyText: "Same operation.",
+      scheduledFor: "2026-09-18T00:10:00.000Z"
+    };
+    const created = await request(app)
+      .post("/actions/gmail-scheduled-send-create")
+      .set("authorization", `Bearer ${token}`)
+      .send(payload)
+      .expect(200);
+    timestamp = Date.parse("2026-09-18T00:11:00.000Z");
+    const replayed = await request(app)
+      .post("/actions/gmail-scheduled-send-create")
+      .set("authorization", `Bearer ${token}`)
+      .send(payload)
+      .expect(200);
+    assert.equal(replayed.body.result.id, created.body.result.id);
+    assert.equal(replayed.body.result.replayed, true);
+    assert.equal(gmail.createCalls, 1);
   });
 });

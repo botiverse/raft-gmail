@@ -44,6 +44,14 @@ export function createGmailGateway(config: Config): GmailGateway {
       });
       if (!response.data.id) throw new Error("GMAIL_DRAFT_MISSING_ID");
       return { id: response.data.id, ...(response.data.message?.id ? { messageId: response.data.message.id } : {}) };
+    },
+    async sendDraft(refreshToken, draftId) {
+      const response = await client(refreshToken).users.drafts.send({
+        userId: "me",
+        requestBody: { id: draftId }
+      });
+      if (!response.data.id || !response.data.threadId) throw new Error("GMAIL_SENT_MESSAGE_MISSING_ID");
+      return { id: response.data.id, threadId: response.data.threadId };
     }
   };
 }

@@ -8,7 +8,8 @@ import type {
   DraftOperation,
   GmailAccount,
   GrantScope,
-  Repository
+  Repository,
+  ScheduledEmail
 } from "./types.js";
 
 export interface D1Result<T = Record<string, unknown>> {
@@ -50,7 +51,9 @@ function accountFromRow(row: Row): GmailAccount {
 
 function scopesFromRow(row: Row, key: string): GrantScope[] {
   const parsed = JSON.parse(stringValue(row, key)) as unknown;
-  if (!Array.isArray(parsed) || parsed.some((scope) => scope !== "gmail.read" && scope !== "gmail.draft")) {
+  if (!Array.isArray(parsed) || parsed.some(
+    (scope) => scope !== "gmail.read" && scope !== "gmail.draft" && scope !== "gmail.schedule"
+  )) {
     throw new Error(`D1_ROW_INVALID:${key}`);
   }
   return parsed as GrantScope[];
@@ -106,6 +109,36 @@ function draftOperationFromRow(row: Row): DraftOperation {
     status: stringValue(row, "status") as DraftOperation["status"],
     ...(typeof providerDraftId === "string" && providerDraftId ? { providerDraftId } : {}),
     updatedAt: stringValue(row, "updated_at")
+  };
+}
+
+function optionalString(row: Row, key: string): string | undefined {
+  const value = row[key];
+  return typeof value === "string" && value ? value : undefined;
+}
+
+function scheduledEmailFromRow(row: Row): ScheduledEmail {
+  const providerDraftId = optionalString(row, "provider_draft_id");
+  const providerMessageId = optionalString(row, "provider_message_id");
+  const failureCode = optionalString(row, "failure_code");
+  const sentAt = optionalString(row, "sent_at");
+  const canceledAt = optionalString(row, "canceled_at");
+  return {
+    id: stringValue(row, "id"),
+    accountId: stringValue(row, "gmail_account_id"),
+    agentId: stringValue(row, "raft_agent_id"),
+    serverId: stringValue(row, "raft_server_id"),
+    operationId: stringValue(row, "operation_id"),
+    requestHash: stringValue(row, "request_hash"),
+    ...(providerDraftId ? { providerDraftId } : {}),
+    ...(providerMessageId ? { providerMessageId } : {}),
+    scheduledFor: stringValue(row, "scheduled_for"),
+    status: stringValue(row, "status") as ScheduledEmail["status"],
+    ...(failureCode ? { failureCode } : {}),
+    createdAt: stringValue(row, "created_at"),
+    updatedAt: stringValue(row, "updated_at"),
+    ...(sentAt ? { sentAt } : {}),
+    ...(canceledAt ? { canceledAt } : {})
   };
 }
 
@@ -421,5 +454,126 @@ export class D1Repository implements Repository {
     ).bind(providerDraftId, nowIso(), accountId, agentId, operationId).first<Row>();
     if (!row) throw new Error("DRAFT_OPERATION_NOT_PENDING");
     return draftOperationFromRow(row);
+  }
+
+  async beginScheduledEmail(email: ScheduledEmail): Promise<{ created: boolean; email: ScheduledEmail }> {
+    const result = await this.database.prepare(
+      `INSERT OR IGNORE INTO scheduled_emails
+         (id, gmail_account_id, raft_agent_id, raft_server_id, operation_id, request_hash,
+          scheduled_for, status, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'preparing', ?, ?)`
+    ).bind(
+      email.id, email.accountId, email.agentId, email.serverId, email.operationId,
+      email.requestHash, email.scheduledFor, email.createdAt, email.updatedAt
+    ).run();
+    const row = await this.database.prepare(
+      `SELECT * FROM scheduled_emails
+       WHERE gmail_account_id = ? AND raft_agent_id = ? AND operation_id = ?`
+    ).bind(email.accountId, email.agentId, email.operationId).first<Row>();
+    if (!row) throw new Error("D1_WRITE_FAILED:scheduled_emails");
+    return { created: (result.meta.changes ?? 0) === 1, email: scheduledEmailFromRow(row) };
+  }
+
+  async completeScheduledEmailPreparation(
+    id: string,
+    accountId: string,
+    agentId: string,
+    providerDraftId: string
+  ): Promise<ScheduledEmail> {
+    const row = await this.database.prepare(
+      `UPDATE scheduled_emails
+       SET status = 'scheduled', provider_draft_id = ?, updated_at = ?
+       WHERE id = ? AND gmail_account_id = ? AND raft_agent_id = ? AND status = 'preparing'
+       RETURNING *`
+    ).bind(providerDraftId, nowIso(), id, accountId, agentId).first<Row>();
+    if (!row) throw new Error("SCHEDULED_EMAIL_NOT_PREPARING");
+    return scheduledEmailFromRow(row);
+  }
+
+  async listScheduledEmails(accountId: string, agentId: string, serverId: string): Promise<ScheduledEmail[]> {
+    const result = await this.database.prepare(
+      `SELECT * FROM scheduled_emails
+       WHERE gmail_account_id = ? AND raft_agent_id = ? AND raft_server_id = ?
+       ORDER BY scheduled_for DESC, created_at DESC`
+    ).bind(accountId, agentId, serverId).all<Row>();
+    return (result.results ?? []).map(scheduledEmailFromRow);
+  }
+
+  async getScheduledEmailByOperation(
+    accountId: string,
+    agentId: string,
+    operationId: string
+  ): Promise<ScheduledEmail | null> {
+    const row = await this.database.prepare(
+      `SELECT * FROM scheduled_emails
+       WHERE gmail_account_id = ? AND raft_agent_id = ? AND operation_id = ?`
+    ).bind(accountId, agentId, operationId).first<Row>();
+    return row ? scheduledEmailFromRow(row) : null;
+  }
+
+  async cancelScheduledEmail(
+    id: string,
+    accountId: string,
+    agentId: string,
+    serverId: string
+  ): Promise<ScheduledEmail | null> {
+    const timestamp = nowIso();
+    const row = await this.database.prepare(
+      `UPDATE scheduled_emails
+       SET status = 'canceled', failure_code = 'CANCELED_BY_AGENT', canceled_at = ?, updated_at = ?
+       WHERE id = ? AND gmail_account_id = ? AND raft_agent_id = ? AND raft_server_id = ?
+         AND status = 'scheduled'
+       RETURNING *`
+    ).bind(timestamp, timestamp, id, accountId, agentId, serverId).first<Row>();
+    return row ? scheduledEmailFromRow(row) : null;
+  }
+
+  async claimDueScheduledEmails(now: string, limit: number): Promise<ScheduledEmail[]> {
+    const candidates = await this.database.prepare(
+      `SELECT id FROM scheduled_emails
+       WHERE status = 'scheduled' AND scheduled_for <= ?
+       ORDER BY scheduled_for, created_at LIMIT ?`
+    ).bind(now, limit).all<Row>();
+    const claimed: ScheduledEmail[] = [];
+    for (const candidate of candidates.results ?? []) {
+      const row = await this.database.prepare(
+        `UPDATE scheduled_emails SET status = 'sending', updated_at = ?
+         WHERE id = ? AND status = 'scheduled' AND scheduled_for <= ? RETURNING *`
+      ).bind(now, stringValue(candidate, "id"), now).first<Row>();
+      if (row) claimed.push(scheduledEmailFromRow(row));
+    }
+    return claimed;
+  }
+
+  async completeScheduledEmailSent(id: string, providerMessageId: string): Promise<ScheduledEmail> {
+    const timestamp = nowIso();
+    const row = await this.database.prepare(
+      `UPDATE scheduled_emails
+       SET status = 'sent', provider_message_id = ?, sent_at = ?, updated_at = ?
+       WHERE id = ? AND status = 'sending' RETURNING *`
+    ).bind(providerMessageId, timestamp, timestamp, id).first<Row>();
+    if (!row) throw new Error("SCHEDULED_EMAIL_NOT_SENDING");
+    return scheduledEmailFromRow(row);
+  }
+
+  async completeScheduledEmailCanceled(id: string, failureCode: string): Promise<ScheduledEmail> {
+    const timestamp = nowIso();
+    const row = await this.database.prepare(
+      `UPDATE scheduled_emails
+       SET status = 'canceled', failure_code = ?, canceled_at = ?, updated_at = ?
+       WHERE id = ? AND status = 'sending' RETURNING *`
+    ).bind(failureCode, timestamp, timestamp, id).first<Row>();
+    if (!row) throw new Error("SCHEDULED_EMAIL_NOT_SENDING");
+    return scheduledEmailFromRow(row);
+  }
+
+  async completeScheduledEmailOutcomeUnknown(id: string, failureCode: string): Promise<ScheduledEmail> {
+    const row = await this.database.prepare(
+      `UPDATE scheduled_emails
+       SET status = 'outcome_unknown', failure_code = ?, updated_at = ?
+       WHERE id = ? AND status IN ('preparing', 'sending') RETURNING *`
+    ).bind(failureCode, nowIso(), id).first<Row>();
+    if (!row) throw new Error("SCHEDULED_EMAIL_NOT_SENDING");
+    return scheduledEmailFromRow(row);
   }
 }

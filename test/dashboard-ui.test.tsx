@@ -130,14 +130,14 @@ function renderDashboard(api: DashboardApi) {
 }
 
 describe("owner dashboard", () => {
-  it("shows account-scoped grants and never exposes a send action", async () => {
+  it("shows account-scoped scheduled-send grants without exposing an immediate-send action", async () => {
     const account = { id: "11111111-1111-4111-8111-111111111111", email: "cindy@example.com", createdAt: "2026-09-18T00:00:00.000Z" };
     const grant: PublicAgentGrant = {
       accountId: account.id,
       agentId: "9c3b3d7f-291a-4a21-862b-37e754186cdf",
       agentName: "John",
       serverId: "server-1",
-      scopes: ["gmail.read", "gmail.draft"],
+      scopes: ["gmail.read", "gmail.draft", "gmail.schedule"],
       enabled: true,
       updatedAt: "2026-09-18T00:00:00.000Z"
     };
@@ -148,8 +148,9 @@ describe("owner dashboard", () => {
     assert.equal(screen.getAllByText("cindy@example.com").length >= 2, true);
     assert.equal(screen.getByText("Read mail") !== null, true);
     assert.equal(screen.getByText("Maintain drafts") !== null, true);
+    assert.equal(screen.getByText("Schedule send") !== null, true);
     assert.equal(screen.queryByRole("button", { name: /send/i }), null);
-    assert.equal(screen.getByText(/Sending mail is not available/i) !== null, true);
+    assert.equal(screen.getByText(/Immediate sending is not available/i) !== null, true);
   });
 
   it("explains the request flow and approves an authenticated Agent request", async () => {
@@ -158,7 +159,7 @@ describe("owner dashboard", () => {
       id: "33333333-3333-4333-8333-333333333333",
       agentId: "agent-demo",
       agentName: "Demo Agent",
-      requestedScopes: ["gmail.read", "gmail.draft"],
+      requestedScopes: ["gmail.read", "gmail.draft", "gmail.schedule"],
       reason: "Triage the inbox and prepare drafts.",
       status: "pending",
       createdAt: "2026-09-18T00:00:00.000Z"

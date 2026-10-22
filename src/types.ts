@@ -1,4 +1,4 @@
-export const grantScopes = ["gmail.read", "gmail.draft"] as const;
+export const grantScopes = ["gmail.read", "gmail.draft", "gmail.schedule"] as const;
 export type GrantScope = (typeof grantScopes)[number];
 
 export type PrincipalType = "human" | "agent";
@@ -85,6 +85,32 @@ export interface DraftOperation {
   updatedAt: string;
 }
 
+export type ScheduledEmailStatus =
+  | "preparing"
+  | "scheduled"
+  | "sending"
+  | "sent"
+  | "canceled"
+  | "outcome_unknown";
+
+export interface ScheduledEmail {
+  id: string;
+  accountId: string;
+  agentId: string;
+  serverId: string;
+  operationId: string;
+  requestHash: string;
+  providerDraftId?: string;
+  providerMessageId?: string;
+  scheduledFor: string;
+  status: ScheduledEmailStatus;
+  failureCode?: string;
+  createdAt: string;
+  updatedAt: string;
+  sentAt?: string;
+  canceledAt?: string;
+}
+
 export interface Repository {
   upsertGmailAccount(input: Omit<GmailAccount, "id" | "createdAt">): Promise<GmailAccount>;
   listGmailAccounts(ownerId: string, serverId: string): Promise<GmailAccount[]>;
@@ -126,6 +152,22 @@ export interface Repository {
     operationId: string,
     providerDraftId: string
   ): Promise<DraftOperation>;
+  beginScheduledEmail(
+    email: ScheduledEmail
+  ): Promise<{ created: boolean; email: ScheduledEmail }>;
+  completeScheduledEmailPreparation(
+    id: string,
+    accountId: string,
+    agentId: string,
+    providerDraftId: string
+  ): Promise<ScheduledEmail>;
+  getScheduledEmailByOperation(accountId: string, agentId: string, operationId: string): Promise<ScheduledEmail | null>;
+  listScheduledEmails(accountId: string, agentId: string, serverId: string): Promise<ScheduledEmail[]>;
+  cancelScheduledEmail(id: string, accountId: string, agentId: string, serverId: string): Promise<ScheduledEmail | null>;
+  claimDueScheduledEmails(now: string, limit: number): Promise<ScheduledEmail[]>;
+  completeScheduledEmailSent(id: string, providerMessageId: string): Promise<ScheduledEmail>;
+  completeScheduledEmailCanceled(id: string, failureCode: string): Promise<ScheduledEmail>;
+  completeScheduledEmailOutcomeUnknown(id: string, failureCode: string): Promise<ScheduledEmail>;
 }
 
 export interface GmailSearchResult {
@@ -154,4 +196,5 @@ export interface GmailGateway {
   read(refreshToken: string, messageId: string): Promise<GmailMessageResult>;
   createDraft(refreshToken: string, input: DraftInput): Promise<{ id: string; messageId?: string }>;
   updateDraft(refreshToken: string, draftId: string, input: DraftInput): Promise<{ id: string; messageId?: string }>;
+  sendDraft(refreshToken: string, draftId: string): Promise<{ id: string; threadId: string }>;
 }

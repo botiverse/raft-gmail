@@ -21,10 +21,10 @@ Human owner mutations require both the signed same-site session cookie and its `
 
 Service-local Agent sessions default to 15 minutes and cannot be configured beyond one hour. Account-grant revocation is checked live on every action. Raft app-install revocation is not yet pushed into this service, so a previously issued local Agent session remains structurally valid until its short expiry; deployments that need immediate app-level revocation should add a Raft revoke hook or live introspection before widening the session lifetime.
 
-## No-send guarantee
+## Send boundary
 
-Google's `gmail.compose` scope permits both draft management and sending. The service's no-send guarantee comes from the smaller public manifest and implementation, not from the Google scope. CI scans production source for Gmail send calls and send routes, but review is still required when dependencies or action wiring change.
+Google's `gmail.compose` scope permits both draft management and sending. The service's narrower guarantee comes from the public manifest and implementation, not from the Google scope: there is no immediate-send action, and exactly one provider draft-send call is owned by the scheduled worker. That worker atomically claims a due job, revalidates the live `gmail.schedule` grant, and never retries an ambiguous outcome. CI checks this source boundary, but review is still required when dependencies, action wiring, or Worker scheduling change.
 
 ## Privacy
 
-Owner APIs never return encrypted tokens. Agent action audit metadata excludes subjects, bodies, recipients, raw MIME, and provider tokens. Search and read results do contain authorized mailbox data and are returned only to the calling Agent; downstream handling is outside this service's boundary.
+Owner APIs never return encrypted tokens. Agent action audit metadata and scheduled-job rows exclude subjects, bodies, recipients, raw MIME, and provider tokens. Scheduled content lives only in the Gmail draft. Search and read results do contain authorized mailbox data and are returned only to the calling Agent; downstream handling is outside this service's boundary.
