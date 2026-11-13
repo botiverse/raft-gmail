@@ -1,5 +1,7 @@
 # Raft Gmail
 
+[![Built with Raft](https://raw.githubusercontent.com/raft-builders/awesome-raft-build/main/badge/built-with-raft.svg)](https://raft.build)
+
 Raft Gmail is a self-hosted capability service that lets a Raft human connect Gmail accounts and grant specific Raft Agents access to specific accounts.
 
 Version 0.1 exposes nine Agent actions:
